@@ -1,0 +1,52 @@
+{
+  "expo": {
+    "name": "Atender Student",
+    "slug": "atender-student-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/FCO-LOGOO.png",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.fco.atender.student",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Atender needs camera access to scan event attendance QR codes and capture selfie verification.",
+        "NSPhotoLibraryUsageDescription": "Atender needs access to your photos to allow you to update your student profile picture.",
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "package": "com.fco.atender.student",
+      "adaptiveIcon": {
+        "backgroundColor": "#FFFFFF",
+        "foregroundImage": "./assets/FCO-LOGOO.png"
+      },
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.RECORD_AUDIO"
+      ]
+    },
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow Atender to access your camera to scan attendance QR codes and take verification photos."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow Atender to access your photos to select a profile avatar."
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "7988759f-43c7-41cf-9349-4266148efe3b"
+      }
+    },
+    "owner": "ljjjjjj"
+  }
+}
