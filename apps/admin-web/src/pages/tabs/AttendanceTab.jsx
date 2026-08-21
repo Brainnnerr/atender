@@ -173,7 +173,7 @@ export default function AttendanceTab({ currentUser }) {
   };
 
   // Handle manual attendance submission via RPC
-  const handleManualAttendanceSubmit = async (e) => {
+const handleManualAttendanceSubmit = async (e) => {
     e.preventDefault();
     if (!manualEventId || !manualStudentId) {
       showToast('Please select both an event and a student.', 'error');
@@ -188,6 +188,23 @@ export default function AttendanceTab({ currentUser }) {
       });
 
       if (error) throw error;
+
+      // Find student and event names for the audit log metadata
+      const targetStudent = students.find((s) => s.id === manualStudentId);
+      const targetEvent = events.find((ev) => ev.id === manualEventId);
+
+      // Record system audit log for manual attendance assignment
+      await logAdminAction({
+        currentUser,
+        actionType: 'MANUAL_ATTENDANCE_OVERRIDE',
+        module: 'ATTENDANCE',
+        targetId: manualStudentId,
+        details: {
+          student_name: targetStudent?.full_name || 'Unknown Student',
+          student_number: targetStudent?.student_id || 'N/A',
+          event_title: targetEvent?.title || 'Assembly Event',
+        },
+      });
 
       showToast('Student successfully marked present and any fines waived!');
       setManualModalOpen(false);
