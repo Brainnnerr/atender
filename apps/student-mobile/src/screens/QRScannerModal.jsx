@@ -13,7 +13,6 @@ import {
 } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { Ionicons } from '@expo/vector-icons';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../services/supabase';
 
 const { width, height } = Dimensions.get('window');
@@ -77,8 +76,7 @@ export default function QRScannerModal({ visible, profile, onClose, onScanComple
 
       // HARD REJECTION IF EXPIRED OR CLOSED
       if (!isOpen) {
-        // Run fine processor to sync the penalty
-        await supabase.rpc('process_expired_event_fines');
+        await supabase.rpc('process_expired_event_fines').catch(() => null);
 
         Alert.alert(
           'QR SCANNING LOCKED',
@@ -116,51 +114,18 @@ export default function QRScannerModal({ visible, profile, onClose, onScanComple
       });
 
       const photoBase64 = `data:image/jpeg;base64,${photo.base64}`;
-      const now = new Date().toISOString();
 
-      try {
-        // 1. Attempt online RPC sync
-        const { data: res, error: rpcErr } = await supabase.rpc('record_student_attendance', {
-          p_event_id: scannedData.eventId,
-          p_student_id: profile.id,
-          p_proof_photo_url: photoBase64,
-        });
+      const { data: res, error: rpcErr } = await supabase.rpc('record_student_attendance', {
+        p_event_id: scannedData.eventId,
+        p_student_id: profile.id,
+        p_proof_photo_url: photoBase64,
+      });
 
-        if (rpcErr || !res?.success) {
-          throw new Error(res?.message || rpcErr?.message || 'Attendance window closed');
-        }
-
-        Alert.alert('Attendance Verified!', 'Your presence has been recorded.');
-      } catch (networkErr) {
-        // If server returned a strict attendance denial (closed session), show error
-        if (networkErr.message?.includes('CLOSED') || networkErr.message?.includes('EXPIRED') || networkErr.message?.includes('LOCKED')) {
-          Alert.alert('Attendance Denied', networkErr.message);
-          if (onScanComplete) onScanComplete();
-          onClose();
-          return;
-        }
-
-        // 2. Offline Fallback: Save to AsyncStorage Queue
-        const offlineRecord = {
-          id: `${scannedData.eventId}-${Date.now()}`,
-          eventId: scannedData.eventId,
-          eventTitle: scannedData.title || 'Event Assembly',
-          studentId: profile.id,
-          timeIn: now,
-          photoBase64,
-          timestamp: now,
-        };
-
-        const existingStr = await AsyncStorage.getItem('@offline_scans');
-        const queue = existingStr ? JSON.parse(existingStr) : [];
-        queue.push(offlineRecord);
-        await AsyncStorage.setItem('@offline_scans', JSON.stringify(queue));
-
-        Alert.alert(
-          'Saved Offline 📡',
-          'No internet connection detected. Your timestamped scan is stored on your device. Go to Settings to sync when back online.'
-        );
+      if (rpcErr || !res?.success) {
+        throw new Error(res?.message || rpcErr?.message || 'Attendance window closed');
       }
+
+      Alert.alert('Attendance Verified!', 'Your presence has been recorded.');
 
       if (onScanComplete) onScanComplete();
       onClose();
@@ -359,6 +324,7 @@ const styles = StyleSheet.create({
     borderColor: '#ffffff',
     justifyContent: 'center',
     alignItems: 'center',
+    alignSelf: 'center',
   },
   shutterInner: { width: 60, height: 60, borderRadius: 30, backgroundColor: '#8b0000' },
   uploadingContainer: {

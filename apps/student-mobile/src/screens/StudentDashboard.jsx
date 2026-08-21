@@ -64,36 +64,41 @@ export default function StudentDashboard({ profile: initialProfile, onSignOut })
     try {
       if (!refreshing) setLoading(true);
 
+      console.log('--- STARTING DASHBOARD LOAD ---');
+      console.log('Student User ID:', studentUserId);
+
       if (!studentUserId) {
+        console.warn('⚠️ No studentUserId found! Profile prop:', initialProfile);
         if (onSignOut) onSignOut();
         return;
       }
 
-      // 1. Process auto-fines cleanly for closed/expired events
-      await supabase.rpc('sync_absent_student_fines').catch(() => null);
+      // 1. Skip RPC for a moment or catch it visibly
+      try {
+        await supabase.rpc('sync_absent_student_fines');
+      } catch (rpcErr) {
+        console.log('RPC sync_absent_student_fines skipped/errored:', rpcErr.message);
+      }
 
-      // 2. Fetch fresh Profile
-      const { data: userProfile, error: profileErr } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('id', studentUserId)
-        .single();
-
-      if (userProfile && !profileErr) setProfile(userProfile);
-
-      // 3. Fetch Events
+      // 2. Fetch Events
+      console.log('Fetching events...');
       const { data: eventsData, error: eventsErr } = await supabase
         .from('events')
         .select('*')
         .order('start_time', { ascending: false });
 
-      if (!eventsErr) setEvents(eventsData || []);
+      if (eventsErr) console.error('Events Error:', eventsErr.message);
+      else console.log('Events fetched successfully:', eventsData?.length);
 
-      // 4. Fetch Attendance Logs
+      setEvents(eventsData || []);
+
+      // 3. Fetch Attendance Logs
       const { data: attendanceData, error: attErr } = await supabase
         .from('attendance')
         .select('event_id, time_in, time_out, status')
         .eq('student_id', studentUserId);
+
+      if (attErr) console.error('Attendance Error:', attErr.message);
 
       if (!attErr) {
         const attendanceMap = {};
@@ -103,12 +108,14 @@ export default function StudentDashboard({ profile: initialProfile, onSignOut })
         setAttendanceRecords(attendanceMap);
       }
 
-      // 5. Fetch Total Unpaid Fines (Instant Aggregation)
+      // 4. Fetch Total Unpaid Fines
       const { data: finesData, error: finesErr } = await supabase
         .from('fines')
         .select('amount, status')
         .eq('student_id', studentUserId)
         .in('status', ['unpaid', 'pending_approval']);
+
+      if (finesErr) console.error('Fines Error:', finesErr.message);
 
       if (!finesErr && finesData) {
         const sum = finesData.reduce(
@@ -118,10 +125,11 @@ export default function StudentDashboard({ profile: initialProfile, onSignOut })
         setTotalFines(sum);
       }
     } catch (err) {
-      console.error('Dashboard load error:', err);
+      console.error('CRITICAL Dashboard load error:', err);
     } finally {
       setLoading(false);
       setRefreshing(false);
+      console.log('--- DASHBOARD LOAD COMPLETE ---');
     }
   };
 
@@ -165,7 +173,15 @@ export default function StudentDashboard({ profile: initialProfile, onSignOut })
         )}
 
         {activeTab === 'profile' && (
-          <ProfileTab profile={profile} onProfileUpdated={loadDashboardData} />
+          <ProfileTab 
+            profile={profile} 
+            onProfileUpdated={(updatedFields) => {
+              if (updatedFields) {
+                setProfile(updatedFields); // Instantly update local state
+              }
+              loadDashboardData(); // Refresh full data
+            }} 
+          />
         )}
 
         {activeTab === 'settings' && (

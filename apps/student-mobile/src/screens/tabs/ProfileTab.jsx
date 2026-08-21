@@ -61,7 +61,11 @@ export default function ProfileTab({ profile, onProfileUpdated }) {
         if (error) throw error;
 
         Alert.alert('Avatar Updated', 'Your profile picture has been synced to your attendance records.');
-        if (onProfileUpdated) onProfileUpdated();
+        
+        // Pass the updated profile fields back up to StudentDashboard to refresh instantly
+        if (onProfileUpdated) {
+          onProfileUpdated({ ...profile, avatar_url: formattedBase64 });
+        }
       }
     } catch (err) {
       Alert.alert('Upload Error', err.message || 'Could not update profile photo.');
@@ -90,7 +94,10 @@ export default function ProfileTab({ profile, onProfileUpdated }) {
       if (error) throw error;
 
       Alert.alert('Success', 'Profile details updated successfully.');
-      if (onProfileUpdated) onProfileUpdated();
+      
+      if (onProfileUpdated) {
+        onProfileUpdated({ ...profile, email: editEmail.trim().toLowerCase(), avatar_url: avatarUri });
+      }
     } catch (err) {
       Alert.alert('Update Failed', err.message || 'Unable to update profile.');
     } finally {
