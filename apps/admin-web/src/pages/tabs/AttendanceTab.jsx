@@ -1,14 +1,22 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '../../lib/supabaseClient';
 import { logAdminAction } from '../../lib/auditLogger';
 
 export default function AttendanceTab({ currentUser }) {
   const [events, setEvents] = useState([]);
+  const [students, setStudents] = useState([]);
   const [selectedEventId, setSelectedEventId] = useState('ALL');
   const [attendanceLogs, setAttendanceLogs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [deleting, setDeleting] = useState(false);
   const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
+
+  // Manual Attendance Modal States
+  const [manualModalOpen, setManualModalOpen] = useState(false);
+  const [manualEventId, setManualEventId] = useState('');
+  const [manualStudentId, setManualStudentId] = useState('');
+  const [manualStudentSearch, setManualStudentSearch] = useState('');
+  const [manualSubmitting, setManualSubmitting] = useState(false);
 
   // Filters
   const [searchQuery, setSearchQuery] = useState('');
@@ -20,6 +28,7 @@ export default function AttendanceTab({ currentUser }) {
 
   useEffect(() => {
     fetchEventsList();
+    fetchStudentsList();
   }, []);
 
   useEffect(() => {
@@ -63,9 +72,24 @@ export default function AttendanceTab({ currentUser }) {
       setEvents(data || []);
       if (data && data.length > 0) {
         setSelectedEventId(data[0].id);
+        setManualEventId(data[0].id);
       }
     } catch (err) {
       console.error('Error fetching events:', err);
+    }
+  };
+
+  const fetchStudentsList = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('id, full_name, student_id, course')
+        .order('full_name', { ascending: true });
+
+      if (error) throw error;
+      setStudents(data || []);
+    } catch (err) {
+      console.error('Error fetching student list:', err);
     }
   };
 
@@ -148,6 +172,35 @@ export default function AttendanceTab({ currentUser }) {
     }
   };
 
+  // Handle manual attendance submission via RPC
+  const handleManualAttendanceSubmit = async (e) => {
+    e.preventDefault();
+    if (!manualEventId || !manualStudentId) {
+      showToast('Please select both an event and a student.', 'error');
+      return;
+    }
+
+    setManualSubmitting(true);
+    try {
+      const { data, error } = await supabase.rpc('admin_override_attendance_present', {
+        p_event_id: manualEventId,
+        p_student_id: manualStudentId,
+      });
+
+      if (error) throw error;
+
+      showToast('Student successfully marked present and any fines waived!');
+      setManualModalOpen(false);
+      setManualStudentId('');
+      setManualStudentSearch('');
+      await fetchAttendanceData();
+    } catch (err) {
+      showToast(err.message || 'Failed to record manual attendance.', 'error');
+    } finally {
+      setManualSubmitting(false);
+    }
+  };
+
   // Invalidate Attendance, assess fine, and record audit log
   const handleDeleteAttendance = async (log) => {
     const studentName = log.profiles?.full_name || 'this student';
@@ -173,7 +226,6 @@ export default function AttendanceTab({ currentUser }) {
         throw new Error(res?.message || error?.message || 'Failed to reject attendance.');
       }
 
-      // Record system audit log
       await logAdminAction({
         currentUser,
         actionType: 'REJECT_ATTENDANCE',
@@ -196,7 +248,6 @@ export default function AttendanceTab({ currentUser }) {
     }
   };
 
-  // Multi-Filter Pipeline
   const filteredLogs = attendanceLogs.filter((log) => {
     const prof = log.profiles || {};
     const name = (prof.full_name || '').toLowerCase();
@@ -210,6 +261,14 @@ export default function AttendanceTab({ currentUser }) {
     const matchesYear = yearFilter === 'ALL' || year === yearFilter;
 
     return matchesSearch && matchesProgram && matchesYear;
+  });
+
+  // Filter student list inside the manual attendance modal search bar
+  const filteredModalStudents = students.filter((stu) => {
+    const name = (stu.full_name || '').toLowerCase();
+    const sId = (stu.student_id || '').toLowerCase();
+    const query = manualStudentSearch.toLowerCase();
+    return name.includes(query) || sId.includes(query);
   });
 
   return (
@@ -230,30 +289,40 @@ export default function AttendanceTab({ currentUser }) {
         </div>
       )}
 
-      {/* 1. TOP BAR */}
+      {/* 1. TOP BAR WITH MANUAL ATTENDANCE BUTTON MOVED TO THE RIGHT CORNER */}
       <div className="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-sm flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
           <h2 className="text-xl font-black text-slate-800 tracking-tight">Attendance Audit & Verification</h2>
           <p className="text-xs text-slate-500 font-medium mt-0.5">
-            Inspect real-time student check-ins, verify selfie photo proofs, and invalidate fraudulent entries.
+            Inspect real-time student check-ins, verify selfie photo proofs, or manually assign attendance for past events.
           </p>
         </div>
 
-        {/* Event Selector Dropdown */}
-        <div className="flex items-center gap-2 w-full md:w-auto">
-          <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Event:</span>
-          <select
-            value={selectedEventId}
-            onChange={(e) => setSelectedEventId(e.target.value)}
-            className="w-full md:w-64 px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#8b0000]/20 focus:border-[#8b0000] cursor-pointer"
+        <div className="flex flex-wrap items-center gap-3 w-full md:w-auto justify-end">
+          {/* Event Selector Dropdown */}
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Event:</span>
+            <select
+              value={selectedEventId}
+              onChange={(e) => setSelectedEventId(e.target.value)}
+              className="w-full md:w-56 px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#8b0000]/20 focus:border-[#8b0000] cursor-pointer"
+            >
+              <option value="ALL">All Events & Assemblies</option>
+              {events.map((evt) => (
+                <option key={evt.id} value={evt.id}>
+                  {evt.title}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Manual Attendance Button (Top-Right Corner) */}
+          <button
+            onClick={() => setManualModalOpen(true)}
+            className="px-4 py-2.5 bg-[#8b0000] hover:bg-[#700000] text-white font-bold text-xs uppercase tracking-wider rounded-xl transition shadow-md shadow-[#8b0000]/20 flex items-center gap-2 cursor-pointer whitespace-nowrap"
           >
-            <option value="ALL">All Events & Assemblies</option>
-            {events.map((evt) => (
-              <option key={evt.id} value={evt.id}>
-                {evt.title}
-              </option>
-            ))}
-          </select>
+            <span>+ Manual Attendance</span>
+          </button>
         </div>
       </div>
 
@@ -429,7 +498,7 @@ export default function AttendanceTab({ currentUser }) {
                     <div className="text-center p-4">
                       <span className="text-2xl">📸</span>
                       <p className="text-slate-400 text-xs font-semibold mt-1">
-                        No selfie photo proof recorded.
+                        No selfie photo proof recorded (Manually assigned).
                       </p>
                     </div>
                   )}
@@ -482,6 +551,92 @@ export default function AttendanceTab({ currentUser }) {
           )}
         </div>
       </div>
+
+      {/* MANUAL ATTENDANCE ASSIGNMENT MODAL WITH SEARCH BAR */}
+      {manualModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-100">
+            <div className="flex justify-between items-center pb-4 border-b border-slate-100">
+              <h3 className="font-black text-slate-800 uppercase tracking-wide text-sm">
+                Manual Attendance Assignment
+              </h3>
+              <button
+                onClick={() => setManualModalOpen(false)}
+                className="text-slate-400 hover:text-slate-600 font-bold text-xl leading-none cursor-pointer"
+              >
+                ×
+              </button>
+            </div>
+
+            <form onSubmit={handleManualAttendanceSubmit} className="space-y-4 mt-4 text-xs font-bold uppercase text-slate-700">
+              <div>
+                <label className="block mb-1.5">Select Event (Past or Present)</label>
+                <select
+                  required
+                  value={manualEventId}
+                  onChange={(e) => setManualEventId(e.target.value)}
+                  className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-normal text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#8b0000]/20 focus:border-[#8b0000]"
+                >
+                  <option value="">-- Choose Event / Assembly --</option>
+                  {events.map((evt) => (
+                    <option key={evt.id} value={evt.id}>
+                      {evt.title} ({new Date(evt.start_time).toLocaleDateString()})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block mb-1.5">Search & Select Student</label>
+                {/* Search Bar inside the Modal */}
+                <input
+                  type="text"
+                  placeholder="Type student name or ID..."
+                  value={manualStudentSearch}
+                  onChange={(e) => setManualStudentSearch(e.target.value)}
+                  className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl font-normal text-slate-900 placeholder-slate-400 mb-2 focus:outline-none focus:ring-2 focus:ring-[#8b0000]/20 focus:border-[#8b0000]"
+                />
+                
+                <select
+                  required
+                  size={4}
+                  value={manualStudentId}
+                  onChange={(e) => setManualStudentId(e.target.value)}
+                  className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-normal text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#8b0000]/20 focus:border-[#8b0000]"
+                >
+                  <option value="">-- Choose Student from Results --</option>
+                  {filteredModalStudents.map((stu) => (
+                    <option key={stu.id} value={stu.id}>
+                      {stu.full_name} ({stu.student_id || 'No ID'})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="p-3 bg-amber-50 rounded-xl border border-amber-200 text-amber-800 font-normal text-[11px] leading-relaxed">
+                ℹ️ Recording attendance here will mark the student as **Present** for the chosen event (such as Soakfest) and automatically waive any associated fines.
+              </div>
+
+              <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setManualModalOpen(false)}
+                  className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl transition cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={manualSubmitting}
+                  className="px-5 py-2.5 bg-[#8b0000] hover:bg-[#700000] text-white font-bold rounded-xl tracking-wider uppercase transition shadow-md cursor-pointer"
+                >
+                  {manualSubmitting ? 'Recording...' : 'Mark Present'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
