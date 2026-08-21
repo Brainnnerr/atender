@@ -40,7 +40,8 @@
         {
           "photosPermission": "Allow Atender to access your photos to select a profile avatar."
         }
-      ]
+      ],
+      "expo-sqlite"
     ],
     "extra": {
       "eas": {

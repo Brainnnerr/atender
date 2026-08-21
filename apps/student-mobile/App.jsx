@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { StatusBar } from 'expo-status-bar';
+import { View, ActivityIndicator, StyleSheet } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from './src/services/supabase';
 import SplashScreen from './src/screens/SplashScreen';
 import LoginScreen from './src/screens/LoginScreen';
@@ -11,43 +13,24 @@ export default function App() {
   const [checkingSession, setCheckingSession] = useState(true);
 
   useEffect(() => {
-    // 1. Check for persisted session on startup
+    // 1. Check for persisted student profile on app startup
     const checkActiveSession = async () => {
       try {
-        const { data: { session } } = await supabase.auth.getSession();
-        
-        if (session?.user) {
-          // Fetch the full student profile linked to this user ID
-          const { data: profile } = await supabase
-            .from('profiles')
-            .select('*')
-            .eq('id', session.user.id)
-            .single();
-
-          if (profile) {
-            setCurrentUserProfile(profile);
-          }
+        const storedProfile = await AsyncStorage.getItem('@student_profile');
+        if (storedProfile) {
+          setCurrentUserProfile(JSON.parse(storedProfile));
         }
       } catch (err) {
-        console.warn('Session check error:', err);
+        console.warn('Session load error:', err);
       } finally {
         setCheckingSession(false);
       }
     };
 
     checkActiveSession();
-
-    // 2. Listen for auth changes (sign in, sign out, token refresh)
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-      if (event === 'SIGNED_OUT' || !session) {
-        setCurrentUserProfile(null);
-      }
-    });
-
-    return () => subscription.unsubscribe();
   }, []);
 
-  // 1. Show Splash Screen first
+  // 1. Show Splash Screen first, or wait until session check finishes
   if (!isSplashDone || checkingSession) {
     return <SplashScreen onFinish={() => setIsSplashDone(true)} />;
   }
@@ -60,8 +43,14 @@ export default function App() {
         <StudentDashboard
           profile={currentUserProfile}
           onSignOut={async () => {
-            await supabase.auth.signOut();
-            setCurrentUserProfile(null);
+            try {
+              await AsyncStorage.removeItem('@student_profile');
+              await supabase.auth.signOut();
+            } catch (e) {
+              console.warn('Sign out error:', e);
+            } finally {
+              setCurrentUserProfile(null);
+            }
           }}
         />
       </>
@@ -72,7 +61,18 @@ export default function App() {
   return (
     <>
       <StatusBar style="light" />
-      <LoginScreen onLoginSuccess={(profile) => setCurrentUserProfile(profile)} />
+      <LoginScreen
+        onLoginSuccess={async (profile) => {
+          try {
+            // Save profile locally so it persists when the app closes
+            await AsyncStorage.setItem('@student_profile', JSON.stringify(profile));
+            setCurrentUserProfile(profile);
+          } catch (err) {
+            console.warn('Failed to save profile session:', err);
+            setCurrentUserProfile(profile);
+          }
+        }}
+      />
     </>
   );
 }

@@ -38,7 +38,6 @@ export default function LoginScreen({ onLoginSuccess }) {
     try {
       setLoading(true);
 
-      // Authenticate via student_authenticate (enforces default password lockout upon change)
       const { data: res, error: rpcErr } = await supabase.rpc('student_authenticate', {
         p_identifier: cleanId,
         p_password: cleanPw,
@@ -54,7 +53,6 @@ export default function LoginScreen({ onLoginSuccess }) {
         return;
       }
 
-      // Successful authentication -> Load Student Dashboard
       if (onLoginSuccess) {
         onLoginSuccess(res.profile);
       }
@@ -65,15 +63,20 @@ export default function LoginScreen({ onLoginSuccess }) {
     }
   };
 
+  // Helper to wrap content safely for web vs mobile
+  const WrapperComponent = Platform.OS === 'web' ? View : TouchableWithoutFeedback;
+  const wrapperProps = Platform.OS === 'web' ? {} : { onPress: Keyboard.dismiss };
+
   return (
     <KeyboardAvoidingView
       style={styles.container}
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
     >
-      <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
+      <WrapperComponent {...wrapperProps}>
         <ScrollView
           contentContainerStyle={styles.scrollContainer}
           showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
         >
           <StatusBar barStyle="dark-content" backgroundColor="#ffffff" />
 
@@ -152,7 +155,7 @@ export default function LoginScreen({ onLoginSuccess }) {
             </TouchableOpacity>
           </View>
         </ScrollView>
-      </TouchableWithoutFeedback>
+      </WrapperComponent>
     </KeyboardAvoidingView>
   );
 }
@@ -239,6 +242,7 @@ const styles = StyleSheet.create({
     height: '100%',
     fontSize: 14,
     color: '#0f172a',
+    outlineStyle: 'none', 
   },
   toggleButton: {
     paddingLeft: 10,
