@@ -15,6 +15,7 @@ export default function StudentsTab({ currentUser }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [programFilter, setProgramFilter] = useState('ALL');
   const [sectionFilter, setSectionFilter] = useState('ALL');
+  const [yearFilter, setYearFilter] = useState('ALL'); // <--- Added Year Filter State
   const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
 
   // Form states
@@ -235,20 +236,22 @@ export default function StudentsTab({ currentUser }) {
     }
   };
 
-  // Filter logic
+  // Filter logic including Year Level
   const filteredStudents = students.filter((s) => {
     const sId = s.student_id || '';
     const sName = s.full_name || '';
     const sCourse = s.course || '';
     const sSection = s.section || '';
+    const sYear = s.year_level?.toString() || '';
 
     const matchesSearch =
       sName.toLowerCase().includes(searchQuery.toLowerCase()) ||
       sId.toLowerCase().includes(searchQuery.toLowerCase());
     const matchesProgram = programFilter === 'ALL' || sCourse === programFilter;
     const matchesSection = sectionFilter === 'ALL' || sSection.toUpperCase() === sectionFilter;
+    const matchesYear = yearFilter === 'ALL' || sYear === yearFilter;
 
-    return matchesSearch && matchesProgram && matchesSection;
+    return matchesSearch && matchesProgram && matchesSection && matchesYear;
   });
 
   // PDF Export & Preview Generator
@@ -260,7 +263,6 @@ export default function StudentsTab({ currentUser }) {
 
     const doc = new jsPDF();
 
-    // Helper to convert imported image asset to Base64 for jsPDF
     const img = new Image();
     img.src = fcoLogo;
     img.onload = () => {
@@ -271,21 +273,18 @@ export default function StudentsTab({ currentUser }) {
       ctx.drawImage(img, 0, 0);
       const dataURL = canvas.toDataURL('image/png');
 
-      // Add Logo Image at top left (X: 14, Y: 10, Width: 18, Height: 18)
       doc.addImage(dataURL, 'PNG', 14, 10, 18, 18);
 
-      // Header text offset to accommodate logo
       doc.setFontSize(14);
-      doc.setTextColor(139, 0, 0); // Maroon header color
+      doc.setTextColor(139, 0, 0);
       doc.text('EASTERN SAMAR STATE UNIVERSITY', 36, 15);
       
       doc.setFontSize(10);
       doc.setTextColor(100, 100, 100);
       doc.text('College of Engineering - Student Masterlist Roster', 36, 21);
-      doc.text(`Filter Applied -> Program: ${programFilter} | Section: ${sectionFilter}`, 14, 32);
+      doc.text(`Filter Applied -> Program: ${programFilter} | Year: ${yearFilter} | Section: ${sectionFilter}`, 14, 32);
       doc.text(`Generated On: ${new Date().toLocaleDateString()}`, 14, 38);
 
-      // Table Data formatting
       const tableColumn = ['No.', 'Student Number', 'Full Name', 'Program', 'Year & Section'];
       const tableRows = [];
 
@@ -309,23 +308,20 @@ export default function StudentsTab({ currentUser }) {
         styles: { fontSize: 9 },
       });
 
-      // Open PDF preview window
       doc.output('dataurlnewwindow');
       showToast('PDF Roster with logo generated successfully!');
     };
 
-    // Fallback if image fails to load instantly
     img.onerror = () => {
       doc.setFontSize(14);
-      doc.setTextColor(139, 0, 0); // Maroon header color
+      doc.setTextColor(139, 0, 0);
       doc.text('EASTERN SAMAR STATE UNIVERSITY', 36, 15);
       
       doc.setFontSize(10);
       doc.setTextColor(100, 100, 100);
       doc.text('College of Engineering - Student Masterlist', 36, 21);
       
-      // Updated to display only Program and Section
-      doc.text(`Program: ${programFilter} | Section: ${sectionFilter}`, 14, 32);
+      doc.text(`Program: ${programFilter} | Year: ${yearFilter} | Section: ${sectionFilter}`, 14, 32);
 
       const tableColumn = ['No.', 'Student Number', 'Full Name', 'Program', 'Year & Section'];
       const tableRows = [];
@@ -356,9 +352,9 @@ export default function StudentsTab({ currentUser }) {
 
   return (
     <div className="space-y-6 max-w-7xl mx-auto relative">
-      {/* Toast Notification Banner */}
+      {/* Toast Notification */}
       {toast.show && (
-       <div className="fixed top-6 right-6 z-[100] animate-bounce">
+        <div className="fixed top-6 right-6 z-[100] animate-bounce">
           <div
             className={`px-4 py-3 rounded-xl shadow-xl flex items-center gap-3 border text-xs font-bold ${
               toast.type === 'error'
@@ -424,7 +420,7 @@ export default function StudentsTab({ currentUser }) {
         </div>
       </div>
 
-      {/* 3. MULTI-FILTER SEARCH BAR */}
+      {/* 3. MULTI-FILTER SEARCH BAR WITH YEAR LEVEL */}
       <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-sm flex flex-col lg:flex-row gap-4 items-center justify-between">
         <div className="w-full lg:w-96 relative">
           <input
@@ -461,6 +457,20 @@ export default function StudentsTab({ currentUser }) {
             ))}
           </div>
 
+          {/* Year Level Filter Dropdown */}
+          <select
+            value={yearFilter}
+            onChange={(e) => setYearFilter(e.target.value)}
+            className="px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#8b0000]/20 cursor-pointer"
+          >
+            <option value="ALL">All Year Levels</option>
+            <option value="1">1st Year</option>
+            <option value="2">2nd Year</option>
+            <option value="3">3rd Year</option>
+            <option value="4">4th Year</option>
+          </select>
+
+          {/* Section Filter Dropdown */}
           <select
             value={sectionFilter}
             onChange={(e) => setSectionFilter(e.target.value)}
@@ -517,7 +527,6 @@ export default function StudentsTab({ currentUser }) {
                           <div>
                             <p className="font-bold text-slate-900 text-sm">{item.full_name}</p>
                             <p className="text-slate-400 font-mono text-[11px] mt-0.5">{item.student_id}</p>
-                            {/* Added Email / Gmail display below student ID */}
                             <p className="text-slate-400 font-normal text-[10px] mt-0.5 truncate max-w-[200px]">
                               {item.email || 'No email provided'}
                             </p>
