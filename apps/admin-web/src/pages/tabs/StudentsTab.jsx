@@ -282,7 +282,7 @@ export default function StudentsTab({ currentUser }) {
       doc.setFontSize(10);
       doc.setTextColor(100, 100, 100);
       doc.text('College of Engineering - Student Masterlist Roster', 36, 21);
-      doc.text(`Filter Applied -> Program: ${programFilter} | Year: ${yearFilter} | Section: ${sectionFilter}`, 14, 32);
+      doc.text(`Program: ${programFilter} | Year: ${yearFilter} | Section: ${sectionFilter}`, 14, 32);
       doc.text(`Generated On: ${new Date().toLocaleDateString()}`, 14, 38);
 
       const tableColumn = ['No.', 'Student Number', 'Full Name', 'Program', 'Year & Section'];
