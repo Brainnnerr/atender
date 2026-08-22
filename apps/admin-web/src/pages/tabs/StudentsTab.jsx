@@ -517,6 +517,10 @@ export default function StudentsTab({ currentUser }) {
                           <div>
                             <p className="font-bold text-slate-900 text-sm">{item.full_name}</p>
                             <p className="text-slate-400 font-mono text-[11px] mt-0.5">{item.student_id}</p>
+                            {/* Added Email / Gmail display below student ID */}
+                            <p className="text-slate-400 font-normal text-[10px] mt-0.5 truncate max-w-[200px]">
+                              {item.email || 'No email provided'}
+                            </p>
                           </div>
                         </div>
                       </td>
