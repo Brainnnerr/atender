@@ -10,6 +10,7 @@ export default function ReportsTab({ currentUser }) {
   const [loading, setLoading] = useState(true);
   const [events, setEvents] = useState([]);
   const [selectedEventId, setSelectedEventId] = useState('ALL');
+  const [semesterFilter, setSemesterFilter] = useState('ALL'); // <--- Added Semester Filter State
   const [programFilter, setProgramFilter] = useState('ALL');
   const [yearFilter, setYearFilter] = useState('ALL');
   const [searchQuery, setSearchQuery] = useState('');
@@ -38,27 +39,26 @@ export default function ReportsTab({ currentUser }) {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [selectedEventId]);
+  }, [selectedEventId, semesterFilter]);
 
   const fetchReportData = async () => {
     try {
       setLoading(true);
 
-      // 1. Safely sync expired events and assess fines
-      try {
-        await supabase.rpc('sync_absent_student_fines');
-      } catch (err) {
-        console.warn('Auto-fine evaluation skipped:', err);
-      }
-
-      // 2. Fetch Events
-      const { data: evData } = await supabase
+      // 1. Fetch Events with optional semester filter
+      let eventsQuery = supabase
         .from('events')
         .select('*')
         .order('start_time', { ascending: false });
+
+      if (semesterFilter !== 'ALL') {
+        eventsQuery = eventsQuery.eq('semester', semesterFilter);
+      }
+
+      const { data: evData } = await eventsQuery;
       setEvents(evData || []);
 
-      // 3. Fetch Enrolled Students
+      // 2. Fetch Enrolled Students
       const { data: stData } = await supabase
         .from('profiles')
         .select('*')
@@ -66,13 +66,13 @@ export default function ReportsTab({ currentUser }) {
         .order('full_name', { ascending: true });
       setStudents(stData || []);
 
-      // 4. Fetch Attendance Logs
+      // 3. Fetch Attendance Logs
       const { data: attData } = await supabase
         .from('attendance')
         .select('*');
       setAttendance(attData || []);
 
-      // 5. Fetch Fines Table
+      // 4. Fetch Fines Table
       const { data: fnData } = await supabase
         .from('fines')
         .select('*');
@@ -110,14 +110,16 @@ export default function ReportsTab({ currentUser }) {
     const studentAttendance = attendance.filter((a) => {
       const isThisStudent = String(a.student_id) === String(student.id);
       const isTargetEvent = selectedEventId === 'ALL' || String(a.event_id) === String(selectedEventId);
-      return isThisStudent && isTargetEvent && (a.time_in || a.status === 'present');
+      const isInCurrentEventsList = events.some(e => String(e.id) === String(a.event_id));
+      return isThisStudent && isTargetEvent && isInCurrentEventsList && (a.time_in || a.status === 'present');
     });
 
     const studentDbFines = fines.filter((f) => {
       const isThisStudent = String(f.student_id) === String(student.id);
       const isTargetEvent = selectedEventId === 'ALL' || String(f.event_id) === String(selectedEventId);
+      const isInCurrentEventsList = events.some(e => String(e.id) === String(f.event_id));
       const isUnpaid = String(f.status || '').toLowerCase() === 'unpaid' || String(f.status || '').toLowerCase() === 'pending_approval';
-      return isThisStudent && isTargetEvent && isUnpaid;
+      return isThisStudent && isTargetEvent && isInCurrentEventsList && isUnpaid;
     });
 
     const isPresent = studentAttendance.length > 0;
@@ -166,10 +168,10 @@ export default function ReportsTab({ currentUser }) {
   });
 
   // Summary Metrics
-  const totalReportStudents = compiledRows.length;
-  const totalPresent = compiledRows.filter((r) => r.isPresent).length;
+  const totalReportStudents = filteredRows.length;
+  const totalPresent = filteredRows.filter((r) => r.isPresent).length;
   const totalAbsent = totalReportStudents - totalPresent;
-  const totalOutstanding = compiledRows.reduce((sum, r) => sum + r.unpaidFineTotal, 0);
+  const totalOutstanding = filteredRows.reduce((sum, r) => sum + r.unpaidFineTotal, 0);
 
   // Generate jsPDF Document Builder with Left (FCO) and Right (ESSU) Logos
   const buildPdfDocument = async () => {
@@ -200,18 +202,18 @@ export default function ReportsTab({ currentUser }) {
 
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(8.5);
-    doc.setTextColor(30, 58, 138); // Navy blue accent
+    doc.setTextColor(30, 58, 138);
     doc.text('COLLEGE OF ENGINEERING', pageWidth / 2, 60, { align: 'center' });
 
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(11);
-    doc.setTextColor(139, 0, 0); // #8b0000 Maroon
+    doc.setTextColor(139, 0, 0);
     doc.text('OFFICIAL ATTENDANCE & COMPLIANCE SUMMARY REPORT', pageWidth / 2, 80, { align: 'center' });
 
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(8.5);
     doc.setTextColor(71, 85, 105);
-    doc.text(`Event: ${currentEventTitle} | Scope: ${reportType}`, pageWidth / 2, 93, { align: 'center' });
+    doc.text(`Semester: ${semesterFilter} | Event: ${currentEventTitle} | Scope: ${reportType}`, pageWidth / 2, 93, { align: 'center' });
 
     // 4. Summary Metric Banner Box
     doc.setDrawColor(226, 232, 240);
@@ -307,7 +309,7 @@ export default function ReportsTab({ currentUser }) {
   const handleDownloadPDF = async () => {
     try {
       const doc = pdfDocInstance || (await buildPdfDocument());
-      doc.save(`Atender_Report_${selectedEventId}_${reportType}.pdf`);
+      doc.save(`Atender_Report_${semesterFilter}_${selectedEventId}_${reportType}.pdf`);
 
       await logAdminAction({
         currentUser,
@@ -315,6 +317,7 @@ export default function ReportsTab({ currentUser }) {
         module: 'REPORTS',
         details: {
           export_format: 'PDF',
+          semester: semesterFilter,
           report_type: reportType,
           program_filter: programFilter,
           year_filter: yearFilter,
@@ -355,7 +358,7 @@ export default function ReportsTab({ currentUser }) {
     const encodedUri = encodeURI(csvContent);
     const link = document.createElement('a');
     link.setAttribute('href', encodedUri);
-    link.setAttribute('download', `Atender_Report_${selectedEventId}_${reportType}.csv`);
+    link.setAttribute('download', `Atender_Report_${semesterFilter}_${selectedEventId}_${reportType}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -366,6 +369,7 @@ export default function ReportsTab({ currentUser }) {
       module: 'REPORTS',
       details: {
         export_format: 'CSV',
+        semester: semesterFilter,
         report_type: reportType,
         program_filter: programFilter,
         year_filter: yearFilter,
@@ -384,6 +388,7 @@ export default function ReportsTab({ currentUser }) {
       module: 'REPORTS',
       details: {
         export_format: 'PRINT',
+        semester: semesterFilter,
         report_type: reportType,
         program_filter: programFilter,
         year_filter: yearFilter,
@@ -398,7 +403,12 @@ export default function ReportsTab({ currentUser }) {
       {/* 1. TOP HEADER & ACTION BUTTONS */}
       <div className="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-sm flex flex-col md:flex-row justify-between items-start md:items-center gap-4 print:hidden">
         <div>
-          <h2 className="text-xl font-black text-slate-800 tracking-tight">Official Reports & Attendance Audit</h2>
+          <div className="flex items-center gap-3">
+            <h2 className="text-xl font-black text-slate-800 tracking-tight">Official Reports & Attendance Audit</h2>
+            <span className="px-3 py-1 bg-red-50 text-[#8b0000] border border-red-200 rounded-full text-[10px] font-black uppercase tracking-wider">
+              📅 {semesterFilter === 'ALL' ? 'All Semesters' : semesterFilter}
+            </span>
+          </div>
           <p className="text-xs text-slate-500 font-medium mt-0.5">
             Preview and download vectorized PDF files, export structured CSV sheets, or print directly.
           </p>
@@ -500,20 +510,38 @@ export default function ReportsTab({ currentUser }) {
             ))}
           </div>
 
-          <div className="flex items-center gap-2">
-            <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Target Event:</span>
-            <select
-              value={selectedEventId}
-              onChange={(e) => setSelectedEventId(e.target.value)}
-              className="px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#8b0000]/20 cursor-pointer"
-            >
-              <option value="ALL">All Assemblies & Events</option>
-              {events.map((evt) => (
-                <option key={evt.id} value={evt.id}>
-                  {evt.title}
-                </option>
-              ))}
-            </select>
+          <div className="flex items-center gap-3">
+            {/* Semester Filter Dropdown */}
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Semester:</span>
+              <select
+                value={semesterFilter}
+                onChange={(e) => setSemesterFilter(e.target.value)}
+                className="px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#8b0000]/20 cursor-pointer"
+              >
+                <option value="ALL">All Semesters</option>
+                <option value="1st Semester">1st Semester</option>
+                <option value="2nd Semester">2nd Semester</option>
+                <option value="Summer Term">Summer Term</option>
+              </select>
+            </div>
+
+            {/* Target Event Dropdown */}
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Event:</span>
+              <select
+                value={selectedEventId}
+                onChange={(e) => setSelectedEventId(e.target.value)}
+                className="px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#8b0000]/20 cursor-pointer"
+              >
+                <option value="ALL">All Assemblies & Events</option>
+                {events.map((evt) => (
+                  <option key={evt.id} value={evt.id}>
+                    {evt.title}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
         </div>
 
@@ -580,7 +608,7 @@ export default function ReportsTab({ currentUser }) {
                 OFFICIAL ATTENDANCE & COMPLIANCE SUMMARY REPORT
               </h2>
               <p className="text-xs text-slate-500 mt-0.5">
-                Event: {selectedEventId === 'ALL' ? 'All Configured Assemblies' : events.find((e) => e.id === selectedEventId)?.title} | Scope: {reportType}
+                Semester: {semesterFilter} | Event: {selectedEventId === 'ALL' ? 'All Configured Assemblies' : events.find((e) => e.id === selectedEventId)?.title} | Scope: {reportType}
               </p>
             </div>
             <img src={essuLogo} alt="ESSU Logo" className="w-14 h-14 object-contain" />

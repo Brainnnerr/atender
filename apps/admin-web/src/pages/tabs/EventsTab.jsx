@@ -17,13 +17,14 @@ export default function EventsTab({ currentUser }) {
   const [statusFilter, setStatusFilter] = useState('ALL');
   const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
   const [currentTime, setCurrentTime] = useState(new Date());
+const [semester, setSemester] = useState('1st Semester');
 
   // Secure deletion modal states
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [eventToDelete, setEventToDelete] = useState(null);
   const [deleteConfirmationText, setDeleteConfirmationText] = useState('');
   const [deleting, setDeleting] = useState(false);
-
+const [semesterFilter, setSemesterFilter] = useState('ALL');
   const printRef = useRef(null);
 
   // Form states
@@ -34,6 +35,11 @@ export default function EventsTab({ currentUser }) {
   const [endTime, setEndTime] = useState('');
   const [fineAmount, setFineAmount] = useState('50.00');
   const [requiresTimeOut, setRequiresTimeOut] = useState(false);
+  
+  // Geofencing states
+  const [latitude, setLatitude] = useState('');
+  const [longitude, setLongitude] = useState('');
+  const [allowedRadius, setAllowedRadius] = useState('20');
 
   useEffect(() => {
     fetchEvents();
@@ -56,6 +62,14 @@ export default function EventsTab({ currentUser }) {
   const fetchEvents = async () => {
     try {
       setLoading(true);
+
+      // Automatically evaluate and generate absence fines for any expired sessions
+      try {
+        await supabase.rpc('process_expired_event_fines');
+      } catch (syncErr) {
+        console.warn('Auto-fine processing notice:', syncErr);
+      }
+
       const { data, error } = await supabase
         .from('events')
         .select('*')
@@ -101,7 +115,11 @@ export default function EventsTab({ currentUser }) {
     setEndTime('');
     setFineAmount('50.00');
     setRequiresTimeOut(false);
+    setLatitude('');
+    setLongitude('');
+    setAllowedRadius('20');
     setModalOpen(true);
+    setSemester('1st Semester');
   };
 
   const handleOpenEditModal = (event) => {
@@ -114,7 +132,11 @@ export default function EventsTab({ currentUser }) {
     setEndTime(event.end_time ? new Date(event.end_time).toISOString().slice(0, 16) : '');
     setFineAmount(event.fine_amount?.toString() || '50.00');
     setRequiresTimeOut(!!event.requires_time_out);
+    setLatitude(event.latitude ? event.latitude.toString() : '');
+    setLongitude(event.longitude ? event.longitude.toString() : '');
+    setAllowedRadius(event.allowed_radius ? event.allowed_radius.toString() : '20');
     setModalOpen(true);
+    setSemester(event.semester || '1st Semester');
   };
 
   const handleOpenQrModal = (event) => {
@@ -146,8 +168,12 @@ export default function EventsTab({ currentUser }) {
         location: location.trim(),
         start_time: new Date(startTime).toISOString(),
         end_time: new Date(endTime).toISOString(),
+        semester: semester,
         fine_amount: parseFloat(fineAmount) || 0.0,
         requires_time_out: requiresTimeOut,
+        latitude: latitude ? parseFloat(latitude) : null,
+        longitude: longitude ? parseFloat(longitude) : null,
+        allowed_radius: parseInt(allowedRadius, 10) || 20,
         status: 'upcoming',
         updated_at: new Date().toISOString(),
       };
@@ -172,6 +198,7 @@ export default function EventsTab({ currentUser }) {
             start_time: payload.start_time,
             end_time: payload.end_time,
             fine_amount: payload.fine_amount,
+            allowed_radius: payload.allowed_radius,
           },
         });
 
@@ -197,6 +224,7 @@ export default function EventsTab({ currentUser }) {
             start_time: payload.start_time,
             end_time: payload.end_time,
             fine_amount: payload.fine_amount,
+            allowed_radius: payload.allowed_radius,
           },
         });
 
@@ -289,7 +317,9 @@ export default function EventsTab({ currentUser }) {
       (statusFilter === 'OPEN' && access.isOpen) ||
       (statusFilter === 'CLOSED' && !access.isOpen);
 
-    return matchesSearch && matchesStatus;
+    const matchesSemester = semesterFilter === 'ALL' || e.semester === semesterFilter;
+
+    return matchesSearch && matchesStatus && matchesSemester;
   });
 
   return (
@@ -351,6 +381,7 @@ export default function EventsTab({ currentUser }) {
       </div>
 
       {/* 3. FILTER AND SEARCH BAR */}
+      {/* 3. FILTER AND SEARCH BAR */}
       <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-sm flex flex-col lg:flex-row gap-4 items-center justify-between print:hidden">
         <div className="w-full lg:w-96 relative">
           <input
@@ -370,23 +401,38 @@ export default function EventsTab({ currentUser }) {
           </svg>
         </div>
 
-        <div className="flex items-center gap-1 bg-slate-50 p-1 rounded-xl border border-slate-200/80 w-full lg:w-auto">
-          {['ALL', 'OPEN', 'CLOSED'].map((st) => (
-            <button
-              key={st}
-              onClick={() => setStatusFilter(st)}
-              className={`px-4 py-1.5 rounded-lg text-xs font-bold uppercase transition ${
-                statusFilter === st
-                  ? 'bg-[#8b0000] text-white shadow-sm'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              {st}
-            </button>
-          ))}
+        <div className="flex flex-wrap items-center gap-2 w-full lg:w-auto">
+          {/* Semester Filter Dropdown */}
+          <select
+            value={semesterFilter}
+            onChange={(e) => setSemesterFilter(e.target.value)}
+            className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 uppercase cursor-pointer"
+          >
+            <option value="ALL">Semester: All</option>
+            <option value="1st Semester">1st Semester</option>
+            <option value="2nd Semester">2nd Semester</option>
+            <option value="Summer Term">Summer Term</option>
+          </select>
+
+          {/* Status Pills */}
+          <div className="flex items-center gap-1 bg-slate-50 p-1 rounded-xl border border-slate-200/80">
+            {['ALL', 'OPEN', 'CLOSED'].map((st) => (
+              <button
+                key={st}
+                onClick={() => setStatusFilter(st)}
+                className={`px-4 py-1.5 rounded-lg text-xs font-bold uppercase transition ${
+                  statusFilter === st
+                    ? 'bg-[#8b0000] text-white shadow-sm'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                {st}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
-
+      
       {/* 4. EVENTS MASTERLIST TABLE */}
       <div className="bg-white rounded-2xl border border-slate-200/80 shadow-sm overflow-hidden print:hidden">
         {loading ? (
@@ -422,7 +468,7 @@ export default function EventsTab({ currentUser }) {
                       <tr key={evt.id} className="hover:bg-slate-50/50 transition">
                         <td className="px-6 py-4">
                           <p className="font-bold text-slate-900 text-sm">{evt.title}</p>
-                          <p className="text-slate-400 text-[11px] mt-0.5">📍 {evt.location || 'ESSU Campus'}</p>
+                          <p className="text-slate-400 text-[11px] mt-0.5">📍 {evt.location || 'ESSU Campus'} {evt.allowed_radius ? `(${evt.allowed_radius}m radius)` : ''}</p>
                         </td>
                         <td className="px-6 py-4">
                           <p className="font-bold text-slate-800">
@@ -633,7 +679,7 @@ export default function EventsTab({ currentUser }) {
                   {isEditing ? 'Update Event Details' : 'Create New Event'}
                 </h3>
                 <p className="text-[11px] text-slate-400 mt-0.5">
-                  Set event timing and absence sanctions
+                  Set event timing, venue geofencing, and absence sanctions
                 </p>
               </div>
               <button
@@ -643,6 +689,19 @@ export default function EventsTab({ currentUser }) {
                 ×
               </button>
             </div>
+
+            <div>
+  <label className="block mb-1.5">Academic Semester</label>
+  <select
+    value={semester}
+    onChange={(e) => setSemester(e.target.value)}
+    className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-normal text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#8b0000]/20 focus:border-[#8b0000] cursor-pointer"
+  >
+    <option value="1st Semester">1st Semester</option>
+    <option value="2nd Semester">2nd Semester</option>
+    <option value="Summer Term">Summer Term</option>
+  </select>
+</div>
 
             <form onSubmit={handleSubmit} className="space-y-4 mt-5 text-xs font-bold uppercase text-slate-700">
               <div>
@@ -661,11 +720,78 @@ export default function EventsTab({ currentUser }) {
                 <label className="block mb-1.5">Venue / Location</label>
                 <input
                   type="text"
-                  placeholder="e.g. ESSU Gymnasium"
+                  placeholder="e.g. Teatro Ibabawnon / ESSU Sports Oval"
                   value={location}
                   onChange={(e) => setLocation(e.target.value)}
                   className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-normal text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#8b0000]/20 focus:border-[#8b0000]"
                 />
+              </div>
+
+              {/* Geofencing & Venue GPS Configuration */}
+              <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-3">
+                <div className="flex justify-between items-center">
+                  <span className="text-[11px] font-black text-slate-700 uppercase">Geofencing & Venue GPS</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (navigator.geolocation) {
+                        navigator.geolocation.getCurrentPosition(
+                          (pos) => {
+                            setLatitude(pos.coords.latitude.toString());
+                            setLongitude(pos.coords.longitude.toString());
+                            showToast('Current GPS coordinates captured successfully!');
+                          },
+                          (err) => showToast('Could not retrieve location. Ensure GPS is enabled.', 'error'),
+                          { enableHighAccuracy: true }
+                        );
+                      } else {
+                        showToast('Geolocation is not supported by your browser.', 'error');
+                      }
+                    }}
+                    className="px-3 py-1 bg-white hover:bg-slate-100 border border-slate-200 text-slate-700 rounded-lg text-[10px] font-bold uppercase transition cursor-pointer"
+                  >
+                    📍 Auto-Detect My GPS
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-[10px] text-slate-400 mb-1">Latitude</label>
+                    <input
+                      type="text"
+                      placeholder="e.g. 11.65971"
+                      value={latitude}
+                      onChange={(e) => setLatitude(e.target.value)}
+                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl font-mono text-xs text-slate-900"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] text-slate-400 mb-1">Longitude</label>
+                    <input
+                      type="text"
+                      placeholder="e.g. 125.44236"
+                      value={longitude}
+                      onChange={(e) => setLongitude(e.target.value)}
+                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl font-mono text-xs text-slate-900"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-[10px] text-slate-400 mb-1">Allowed Distance Radius (Meters)</label>
+                  <input
+                    type="number"
+                    min="5"
+                    step="5"
+                    placeholder="e.g. 20"
+                    value={allowedRadius}
+                    onChange={(e) => setAllowedRadius(e.target.value)}
+                    className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl font-mono text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#8b0000]/20 focus:border-[#8b0000]"
+                  />
+                  <p className="text-[10px] text-slate-400 mt-1">
+                    Enter the maximum distance in meters students are allowed to be from the venue.
+                  </p>
+                </div>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

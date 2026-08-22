@@ -6,15 +6,19 @@ const SUPER_ADMIN_EMAIL = 'fcocoe92@gmail.com';
 const DEFAULT_PERMISSIONS = {
   can_manage_events: true,
   can_manage_attendance: true,
+  can_manage_fines: true, // <--- Added Fine Management by default
   can_manage_students: true,
   can_view_reports: true,
+  can_view_student_summary: true,
 };
 
 const PERMISSION_DEFINITIONS = [
   { key: 'can_manage_events', title: 'Events Management', desc: 'Create assemblies, modify schedules, and generate QR stands' },
   { key: 'can_manage_attendance', title: 'Attendance Audit', desc: 'Inspect selfie proofs, check attendance records, and reject invalid check-ins' },
+  { key: 'can_manage_fines', title: 'Fine Management', desc: 'Manage absence penalties, mark student fines as paid/unpaid, and generate PDF audit receipts' }, // <--- Added Fine Management Permission Card
   { key: 'can_manage_students', title: 'Student Masterlist', desc: 'Register students, edit profiles, and reset student default passwords' },
   { key: 'can_view_reports', title: 'Official Reports', desc: 'Preview, export CSV files, and generate official PDF summary sheets' },
+  { key: 'can_view_student_summary', title: 'Student Summary', desc: 'Inspect individual student attendance history and penalty records' },
 ];
 
 export default function AdminsTab({ currentUser }) {
@@ -206,7 +210,7 @@ export default function AdminsTab({ currentUser }) {
 
   return (
     <div className="space-y-6 max-w-7xl mx-auto relative">
-     {/* Toast Notification */}
+      {/* Toast Notification */}
       {toast.show && (
         <div className="fixed top-6 right-6 z-[100] animate-bounce">
           <div
@@ -337,6 +341,11 @@ export default function AdminsTab({ currentUser }) {
                                 Attendance
                               </span>
                             )}
+                            {perms.can_manage_fines && (
+                              <span className="px-2 py-0.5 bg-rose-50 text-rose-700 border border-rose-200 rounded text-[9px] font-bold uppercase">
+                                Fines
+                              </span>
+                            )}
                             {perms.can_manage_students && (
                               <span className="px-2 py-0.5 bg-purple-50 text-purple-700 border border-purple-200 rounded text-[9px] font-bold uppercase">
                                 Students
@@ -345,6 +354,11 @@ export default function AdminsTab({ currentUser }) {
                             {perms.can_view_reports && (
                               <span className="px-2 py-0.5 bg-amber-50 text-amber-700 border border-amber-200 rounded text-[9px] font-bold uppercase">
                                 Reports
+                              </span>
+                            )}
+                            {perms.can_view_student_summary && (
+                              <span className="px-2 py-0.5 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded text-[9px] font-bold uppercase">
+                                Summary
                               </span>
                             )}
                           </div>

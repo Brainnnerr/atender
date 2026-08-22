@@ -10,6 +10,8 @@ import AttendanceTab from './tabs/AttendanceTab';
 import ReportsTab from './tabs/ReportsTab';
 import AdminsTab from './tabs/AdminsTab';
 import SystemLogsTab from './tabs/SystemLogsTab';
+import StudentSummaryTab from './tabs/StudentSummaryTab';
+import FineManagementTab from './tabs/FineManagementTab'; // <--- 1. Import Fine Management Tab
 
 const SUPER_ADMIN_EMAIL = 'fcocoe92@gmail.com';
 
@@ -78,6 +80,28 @@ export default function AdminDashboard({ user, onLogout }) {
       ),
     },
     {
+      id: 'fines',
+      label: 'Fine Management',
+      requiredPermission: 'can_manage_fines', // <--- 2. Added Fine Management permission key
+      superAdminOnly: false,
+      icon: (
+        <svg className="w-5 h-5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z" />
+        </svg>
+      ),
+    },
+    {
+      id: 'summary',
+      label: 'Student Summary',
+      requiredPermission: 'can_view_student_summary',
+      superAdminOnly: false,
+      icon: (
+        <svg className="w-5 h-5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+        </svg>
+      ),
+    },
+    {
       id: 'reports',
       label: 'Reports & Audits',
       requiredPermission: 'can_view_reports',
@@ -103,7 +127,7 @@ export default function AdminDashboard({ user, onLogout }) {
       id: 'admins',
       label: 'Admin Accounts',
       requiredPermission: null,
-      superAdminOnly: true, // ONLY fcocoe92@gmail.com can see this
+      superAdminOnly: true,
       icon: (
         <svg className="w-5 h-5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
@@ -114,7 +138,7 @@ export default function AdminDashboard({ user, onLogout }) {
       id: 'logs',
       label: 'System Logs',
       requiredPermission: null,
-      superAdminOnly: true, // ONLY fcocoe92@gmail.com can see this
+      superAdminOnly: true,
       icon: (
         <svg className="w-5 h-5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
@@ -123,19 +147,13 @@ export default function AdminDashboard({ user, onLogout }) {
     },
   ];
 
-  // Strictly filter navigation items:
   const navigationItems = rawNavigationItems.filter((item) => {
-    // Hide superAdminOnly tabs completely from non-super admins
     if (item.superAdminOnly && !isSuperAdmin) {
       return false;
     }
-
-    // Super admin has unrestricted access to all tabs
     if (isSuperAdmin) {
       return true;
     }
-
-    // Secondary admins check their granted permissions
     if (!item.requiredPermission) return true;
     return !!adminPermissions?.[item.requiredPermission];
   });
@@ -148,19 +166,19 @@ export default function AdminDashboard({ user, onLogout }) {
         return <EventsTab currentUser={user} />;
       case 'attendance':
         return <AttendanceTab currentUser={user} />;
+      case 'fines':
+        return <FineManagementTab currentUser={user} />; // <--- 3. Render Fine Management Tab
+      case 'summary':
+        return <StudentSummaryTab />;
       case 'reports':
         return <ReportsTab currentUser={user} />;
       case 'students':
         return <StudentsTab currentUser={user} />;
       case 'admins':
-        if (!isSuperAdmin) {
-          return <OverviewTab />;
-        }
+        if (!isSuperAdmin) return <OverviewTab />;
         return <AdminsTab currentUser={user} />;
       case 'logs':
-        if (!isSuperAdmin) {
-          return <OverviewTab />;
-        }
+        if (!isSuperAdmin) return <OverviewTab />;
         return <SystemLogsTab />;
       default:
         return <OverviewTab />;
@@ -169,14 +187,12 @@ export default function AdminDashboard({ user, onLogout }) {
 
   return (
     <div className="flex h-screen bg-slate-100 font-sans overflow-hidden">
-      {/* 1. Sidebar */}
       <aside
         className={`${
           isSidebarOpen ? 'w-64' : 'w-20'
         } bg-white border-r border-slate-200 flex flex-col justify-between transition-all duration-300 ease-in-out select-none z-20 flex-shrink-0`}
       >
         <div>
-          {/* Header & Toggle Button */}
           <div className="h-16 flex items-center px-4 justify-between border-b border-slate-100">
             {isSidebarOpen ? (
               <>
@@ -209,7 +225,6 @@ export default function AdminDashboard({ user, onLogout }) {
             )}
           </div>
 
-          {/* Dynamic Navigation Links */}
           <nav className="p-3 space-y-1.5 mt-2">
             {navigationItems.map((tab) => {
               const isActive = activeTab === tab.id;
@@ -232,7 +247,6 @@ export default function AdminDashboard({ user, onLogout }) {
           </nav>
         </div>
 
-        {/* Sign Out Button */}
         <div className="p-3 border-t border-slate-100">
           <button
             onClick={handleSignOut}
@@ -249,9 +263,7 @@ export default function AdminDashboard({ user, onLogout }) {
         </div>
       </aside>
 
-      {/* 2. Main Content Area */}
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-        {/* Top Header */}
         <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-8 z-10 flex-shrink-0">
           <div>
             <h2 className="text-base font-black text-slate-800 uppercase tracking-wider">
@@ -262,12 +274,11 @@ export default function AdminDashboard({ user, onLogout }) {
           <div className="flex flex-col items-end">
             <span className="text-xs font-bold text-slate-800">{user?.email}</span>
             <span className="text-[11px] font-bold text-[#8b0000] tracking-wide">
-              {isSuperAdmin ? '★ Super Administrator' : 'Admin Officer'}
+              {isSuperAdmin ? 'Super Administrator' : 'Admin Officer'}
             </span>
           </div>
         </header>
 
-        {/* Dynamic Body Content */}
         <main className="flex-1 overflow-y-auto p-8">
           {renderActiveTabContent()}
         </main>

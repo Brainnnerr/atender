@@ -3,127 +3,140 @@ import { supabase } from '../../lib/supabaseClient';
 
 export default function OverviewTab() {
   const [loading, setLoading] = useState(true);
-  const [metrics, setMetrics] = useState({
-    totalStudents: 0,
+  const [semesterFilter, setSemesterFilter] = useState('ALL');
+  const [analytics, setAnalytics] = useState({
     totalEvents: 0,
-    activeEvents: 0,
-    totalAttendanceScans: 0,
+    totalAttendance: 0,
+    averageTurnoutRate: 0,
+    departmentTurnout: { BSCE: 0, BSEE: 0, BSCpE: 0 },
+    eventStats: [],
+    turnoutTiming: { morning: 0, afternoon: 0, evening: 0 },
   });
-  const [recentEvents, setRecentEvents] = useState([]);
-  const [recentFines, setRecentFines] = useState([]);
-  const [studentFineBalances, setStudentFineBalances] = useState([]);
-
-  // Ledger Filter & Pagination States
-  const [ledgerSearch, setLedgerSearch] = useState('');
-  const [ledgerProgram, setLedgerProgram] = useState('ALL');
-  const [ledgerSort, setLedgerSort] = useState('highest_fine'); // 'highest_fine', 'lowest_fine', 'most_absences', 'name_asc'
-  const [currentPage, setCurrentPage] = useState(1);
-  const itemsPerPage = 5;
 
   useEffect(() => {
-    fetchOverviewData();
-  }, []);
+    fetchAnalyticsData();
+  }, [semesterFilter]);
 
-  const fetchOverviewData = async () => {
+  const fetchAnalyticsData = async () => {
     try {
       setLoading(true);
 
-      // 1. Sync expired events and assess fines for absent students
-      await supabase.rpc('sync_absent_student_fines');
-
-      // 2. Total Registered Students
-      const { count: studentCount } = await supabase
-        .from('profiles')
-        .select('*', { count: 'exact', head: true })
-        .eq('role', 'student');
-
-      // 3. Events Counts
-      const { data: eventsData } = await supabase
+      // 1. Fetch events with optional semester filter
+      let eventsQuery = supabase
         .from('events')
         .select('*')
-        .order('created_at', { ascending: false });
+        .order('start_time', { ascending: false });
 
-      // 4. Attendance Records Count
-      const { count: attendanceCount } = await supabase
-        .from('attendance')
-        .select('*', { count: 'exact', head: true });
+      if (semesterFilter !== 'ALL') {
+        eventsQuery = eventsQuery.eq('semester', semesterFilter);
+      }
 
-      // 5. Fines Aggregation & Per-Student Breakdown
-      const { data: finesData } = await supabase
-        .from('fines')
-        .select('id, amount, status, created_at, student_id, profiles(full_name, student_id, course, year_level, section, avatar_url), events(title)')
-        .order('created_at', { ascending: false });
+      const { data: eventsData, error: evErr } = await eventsQuery;
+      if (evErr) throw new Error(evErr.message || 'Failed to fetch events');
 
-      const studentMap = {};
+      const events = eventsData || [];
+      const eventIds = events.map(e => e.id);
 
-      (finesData || []).forEach((fine) => {
-        const val = parseFloat(fine.amount) || 0;
+      // 2. Fetch all student profiles for total department headcount
+      const { data: studentsData, error: stuErr } = await supabase
+        .from('profiles')
+        .select('id, course, role')
+        .eq('role', 'student');
+      if (stuErr) throw new Error(stuErr.message || 'Failed to fetch student profiles');
 
-        if (fine.status === 'unpaid' || fine.status === 'pending_approval') {
-          const sId = fine.student_id;
-          if (!studentMap[sId]) {
-            studentMap[sId] = {
-              id: sId,
-              studentId: fine.profiles?.student_id || 'N/A',
-              fullName: fine.profiles?.full_name || 'Registered Student',
-              course: fine.profiles?.course || 'COE',
-              yearLevel: fine.profiles?.year_level || '',
-              section: fine.profiles?.section || '',
-              avatarUrl: fine.profiles?.avatar_url || null,
-              totalDue: 0,
-              absenceCount: 0,
-            };
-          }
-          studentMap[sId].totalDue += val;
-          studentMap[sId].absenceCount += 1;
+      const students = studentsData || [];
+      const studentCourseMap = {};
+      students.forEach(s => {
+        studentCourseMap[s.id] = s.course;
+      });
+
+      // 3. Fetch attendance logs corresponding to active events
+      let attendance = [];
+      if (eventIds.length > 0) {
+        const { data: attData, error: attErr } = await supabase
+          .from('attendance')
+          .select('id, event_id, time_in, student_id')
+          .in('event_id', eventIds);
+        if (attErr) throw new Error(attErr.message || 'Failed to fetch attendance records');
+        
+        // Attach course information safely using our lookup map
+        attendance = (attData || []).map(att => ({
+          ...att,
+          profiles: { course: studentCourseMap[att.student_id] || 'BSCpE' }
+        }));
+      }
+
+      // Calculate Department Headcounts
+      const deptTotals = { BSCE: 0, BSEE: 0, BSCpE: 0 };
+      students.forEach((s) => {
+        if (deptTotals[s.course] !== undefined) {
+          deptTotals[s.course] += 1;
         }
       });
 
-      const rawBalances = Object.values(studentMap);
-
-      setMetrics({
-        totalStudents: studentCount || 0,
-        totalEvents: eventsData?.length || 0,
-        activeEvents: (eventsData || []).filter(e => new Date(e.start_time).getTime() <= Date.now() && new Date(e.end_time).getTime() >= Date.now()).length,
-        totalAttendanceScans: attendanceCount || 0,
+      // Calculate Department Turnout Counts in Attendance
+      const deptTurnout = { BSCE: 0, BSEE: 0, BSCpE: 0 };
+      attendance.forEach((att) => {
+        const c = att.profiles?.course;
+        if (deptTurnout[c] !== undefined) {
+          deptTurnout[c] += 1;
+        }
       });
 
-      setStudentFineBalances(rawBalances);
-      setRecentEvents((eventsData || []).slice(0, 4));
-      setRecentFines((finesData || []).slice(0, 4));
+      // Calculate Turnout Rate per Department (%)
+      const departmentTurnoutRates = {
+        BSCE: deptTotals.BSCE > 0 ? Math.round((deptTurnout.BSCE / (deptTotals.BSCE * Math.max(1, events.length))) * 100) : 0,
+        BSEE: deptTotals.BSEE > 0 ? Math.round((deptTurnout.BSEE / (deptTotals.BSEE * Math.max(1, events.length))) * 100) : 0,
+        BSCpE: deptTotals.BSCpE > 0 ? Math.round((deptTurnout.BSCpE / (deptTotals.BSCpE * Math.max(1, events.length))) * 100) : 0,
+      };
+
+      // Calculate Time-of-Day Check-in Distribution
+      const timing = { morning: 0, afternoon: 0, evening: 0 };
+      attendance.forEach((att) => {
+        const timestamp = att.time_in;
+        if (timestamp) {
+          const hour = new Date(timestamp).getHours();
+          if (hour >= 6 && hour < 12) timing.morning += 1;
+          else if (hour >= 12 && hour < 18) timing.afternoon += 1;
+          else timing.evening += 1;
+        }
+      });
+
+      // Build Per-Event Analytics Performance List
+      const eventPerformanceMap = {};
+      events.forEach((e) => {
+        eventPerformanceMap[e.id] = {
+          id: e.id,
+          title: e.title,
+          startTime: e.start_time,
+          checkIns: 0,
+        };
+      });
+
+      attendance.forEach((att) => {
+        if (eventPerformanceMap[att.event_id]) {
+          eventPerformanceMap[att.event_id].checkIns += 1;
+        }
+      });
+
+      const eventStatsList = Object.values(eventPerformanceMap).sort((a, b) => b.checkIns - a.checkIns);
+
+      // Overall average turnout rate
+      const totalPossibleAttendance = students.length * events.length;
+      const overallRate = totalPossibleAttendance > 0 ? Math.round((attendance.length / totalPossibleAttendance) * 100) : 0;
+
+      setAnalytics({
+        totalEvents: events.length,
+        totalAttendance: attendance.length,
+        averageTurnoutRate: overallRate,
+        departmentTurnout: departmentTurnoutRates,
+        eventStats: eventStatsList,
+        turnoutTiming: timing,
+      });
     } catch (err) {
-      console.error('Error loading analytics:', err);
+      console.error('Error compiling analytics:', err.message || err);
     } finally {
       setLoading(false);
-    }
-  };
-
-  // Ledger Filter, Sort & Pagination Pipeline
-  const filteredLedger = studentFineBalances
-    .filter((student) => {
-      const matchesSearch =
-        student.fullName.toLowerCase().includes(ledgerSearch.toLowerCase()) ||
-        student.studentId.toLowerCase().includes(ledgerSearch.toLowerCase());
-      const matchesProgram = ledgerProgram === 'ALL' || student.course === ledgerProgram;
-      return matchesSearch && matchesProgram;
-    })
-    .sort((a, b) => {
-      if (ledgerSort === 'highest_fine') return b.totalDue - a.totalDue;
-      if (ledgerSort === 'lowest_fine') return a.totalDue - b.totalDue;
-      if (ledgerSort === 'most_absences') return b.absenceCount - a.absenceCount;
-      if (ledgerSort === 'name_asc') return a.fullName.localeCompare(b.fullName);
-      return 0;
-    });
-
-  const totalPages = Math.ceil(filteredLedger.length / itemsPerPage) || 1;
-  const paginatedLedger = filteredLedger.slice(
-    (currentPage - 1) * itemsPerPage,
-    currentPage * itemsPerPage
-  );
-
-  const handlePageChange = (newPage) => {
-    if (newPage >= 1 && newPage <= totalPages) {
-      setCurrentPage(newPage);
     }
   };
 
@@ -132,7 +145,7 @@ export default function OverviewTab() {
       <div className="h-96 flex flex-col items-center justify-center space-y-3">
         <div className="w-10 h-10 border-4 border-[#8b0000]/20 border-t-[#8b0000] rounded-full animate-spin" />
         <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">
-          Compiling Real-Time Analytics...
+          Analyzing Event Telemetry & Turnout Trends...
         </p>
       </div>
     );
@@ -143,41 +156,52 @@ export default function OverviewTab() {
       {/* 1. TOP HEADER CARD */}
       <div className="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h2 className="text-xl font-black text-slate-800 tracking-tight">Executive Dashboard</h2>
+          <h2 className="text-xl font-black text-slate-800 tracking-tight">Event Analytics & Insights</h2>
           <p className="text-xs text-slate-500 font-medium mt-0.5">
-            Real-time telemetry, student headcounts, and organizational revenue tracking.
+            Comprehensive breakdown of student assembly turnout, department participation metrics, and check-in trends.
           </p>
         </div>
-        <button
-          onClick={fetchOverviewData}
-          className="self-start sm:self-auto px-4 py-2.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700 rounded-xl text-xs font-bold uppercase tracking-wider transition cursor-pointer"
-        >
-          ↻ Refresh Data
-        </button>
+        <div className="flex items-center gap-2">
+          {/* Semester Filter Dropdown */}
+          <select
+            value={semesterFilter}
+            onChange={(e) => setSemesterFilter(e.target.value)}
+            className="px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 uppercase cursor-pointer"
+          >
+            <option value="ALL">Semester: All</option>
+            <option value="1st Semester">1st Semester</option>
+            <option value="2nd Semester">2nd Semester</option>
+            <option value="Summer Term">Summer Term</option>
+          </select>
+          <button
+            onClick={fetchAnalyticsData}
+            className="px-4 py-2.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700 rounded-xl text-xs font-bold uppercase tracking-wider transition cursor-pointer"
+          >
+            ↻ Refresh
+          </button>
+        </div>
       </div>
 
-      {/* 2. ANALYTICAL KPI CARDS GRID */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
-        {/* Total Students */}
+      {/* 2. ANALYTICAL METRIC CARDS */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-5">
         <div className="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-sm flex items-center justify-between">
           <div>
-            <p className="text-xs font-bold uppercase tracking-wider text-slate-400">Total Students</p>
-            <p className="text-3xl font-black text-slate-900 mt-2">{metrics.totalStudents}</p>
-            <span className="text-[11px] font-semibold text-emerald-600 mt-1 inline-block">Registered Profiles</span>
+            <p className="text-xs font-bold uppercase tracking-wider text-slate-400">Overall Turnout Rate</p>
+            <p className="text-3xl font-black text-emerald-600 mt-2">{analytics.averageTurnoutRate}%</p>
+            <span className="text-[11px] font-semibold text-emerald-600 mt-1 inline-block">Average attendance across events</span>
           </div>
-          <div className="w-12 h-12 rounded-2xl bg-slate-100 flex items-center justify-center text-slate-600">
+          <div className="w-12 h-12 rounded-2xl bg-emerald-50 flex items-center justify-center text-emerald-600">
             <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
             </svg>
           </div>
         </div>
 
-        {/* Total Events */}
         <div className="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-sm flex items-center justify-between">
           <div>
-            <p className="text-xs font-bold uppercase tracking-wider text-slate-400">Events Conducted</p>
-            <p className="text-3xl font-black text-blue-600 mt-2">{metrics.totalEvents}</p>
-            <span className="text-[11px] font-semibold text-blue-500 mt-1 inline-block">{metrics.activeEvents} Active / Ongoing</span>
+            <p className="text-xs font-bold uppercase tracking-wider text-slate-400">Total Events Hosted</p>
+            <p className="text-3xl font-black text-blue-600 mt-2">{analytics.totalEvents}</p>
+            <span className="text-[11px] font-semibold text-blue-500 mt-1 inline-block">Scheduled Assemblies</span>
           </div>
           <div className="w-12 h-12 rounded-2xl bg-blue-50 flex items-center justify-center text-blue-600">
             <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -186,286 +210,138 @@ export default function OverviewTab() {
           </div>
         </div>
 
-        {/* Total Attendance Scans */}
         <div className="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-sm flex items-center justify-between">
           <div>
-            <p className="text-xs font-bold uppercase tracking-wider text-slate-400">Total Check-Ins</p>
-            <p className="text-3xl font-black text-emerald-600 mt-2">{metrics.totalAttendanceScans}</p>
-            <span className="text-[11px] font-semibold text-emerald-600 mt-1 inline-block">Logged QR Scans</span>
+            <p className="text-xs font-bold uppercase tracking-wider text-slate-400">Total Check-Ins Verified</p>
+            <p className="text-3xl font-black text-slate-900 mt-2">{analytics.totalAttendance}</p>
+            <span className="text-[11px] font-semibold text-slate-500 mt-1 inline-block">Cumulative student scans</span>
           </div>
-          <div className="w-12 h-12 rounded-2xl bg-emerald-50 flex items-center justify-center text-emerald-600">
+          <div className="w-12 h-12 rounded-2xl bg-slate-100 flex items-center justify-center text-slate-700">
             <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
             </svg>
           </div>
         </div>
-
-        {/* College Info */}
-        <div className="bg-gradient-to-br from-[#8b0000] to-[#590000] p-6 rounded-2xl shadow-sm text-white flex flex-col justify-between sm:col-span-2 lg:col-span-3">
-          <div className="flex justify-between items-start">
-            <div>
-              <span className="text-[10px] font-extrabold uppercase tracking-widest text-red-200 bg-white/10 px-2 py-0.5 rounded">
-                Academic Unit
-              </span>
-              <h4 className="text-lg font-black mt-2">College of Engineering</h4>
-              <p className="text-xs text-red-100 font-medium">Federated Class Organization</p>
-            </div>
-            <p className="text-[11px] text-red-200 text-right">Atender Automated Management</p>
-          </div>
-        </div>
       </div>
 
-      {/* 3. STUDENT FINE LIABILITY ACCUMULATION TABLE (WITH SEARCH, FILTER & PAGINATION) */}
-      <div className="bg-white rounded-2xl border border-slate-200/80 shadow-sm overflow-hidden space-y-4">
-        {/* Ledger Header */}
-        <div className="p-6 pb-2 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+      {/* 3. DEPARTMENT TURNOUT & PEAK TIMING BREAKDOWN */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Department Comparison Progress Bars */}
+        <div className="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-sm space-y-5">
           <div>
-            <h3 className="text-sm font-black uppercase tracking-wider text-slate-800">
-              Student Fine Liability Ledger (Absence Summary)
-            </h3>
-            <p className="text-xs text-slate-400 font-medium mt-0.5">
-              Accumulated sanctions owed by students with unexcused event absences
-            </p>
-          </div>
-          <span className="self-start sm:self-auto px-3 py-1 bg-amber-50 text-amber-800 border border-amber-200 rounded-lg text-xs font-bold uppercase tracking-wider">
-            {filteredLedger.length} Students Filtered
-          </span>
-        </div>
-
-        {/* Filter Controls Bar */}
-        <div className="px-6 pb-2 flex flex-col lg:flex-row gap-3 items-center justify-between">
-          {/* Search Input */}
-          <div className="w-full lg:w-80 relative">
-            <input
-              type="text"
-              placeholder="Search liable student or ID..."
-              value={ledgerSearch}
-              onChange={(e) => {
-                setLedgerSearch(e.target.value);
-                setCurrentPage(1);
-              }}
-              className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-[#8b0000]/20 focus:border-[#8b0000]"
-            />
-            <svg
-              className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-            >
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-            </svg>
+            <h3 className="text-sm font-black uppercase tracking-wider text-slate-800">Department Turnout Rates</h3>
+            <p className="text-xs text-slate-400 font-medium mt-0.5">Comparative participation across engineering programs</p>
           </div>
 
-          {/* Department & Sort Controls */}
-          <div className="flex flex-wrap items-center gap-2.5 w-full lg:w-auto">
-            <div className="flex items-center gap-1 bg-slate-50 p-1 rounded-xl border border-slate-200">
-              {['ALL', 'BSCE', 'BSEE', 'BSCpE'].map((dept) => (
-                <button
-                  key={dept}
-                  onClick={() => {
-                    setLedgerProgram(dept);
-                    setCurrentPage(1);
-                  }}
-                  className={`px-3 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
-                    ledgerProgram === dept
-                      ? 'bg-[#8b0000] text-white shadow-sm'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  {dept}
-                </button>
-              ))}
+          <div className="space-y-4 pt-2">
+            <div>
+              <div className="flex justify-between text-xs font-bold text-slate-700 mb-1">
+                <span>Computer Engineering (BSCpE)</span>
+                <span className="text-[#8b0000]">{analytics.departmentTurnout.BSCpE}%</span>
+              </div>
+              <div className="w-full bg-slate-100 h-2.5 rounded-full overflow-hidden">
+                <div className="bg-[#8b0000] h-full rounded-full" style={{ width: `${Math.min(100, analytics.departmentTurnout.BSCpE)}%` }} />
+              </div>
             </div>
 
-            <select
-              value={ledgerSort}
-              onChange={(e) => setLedgerSort(e.target.value)}
-              className="px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#8b0000]/20 cursor-pointer"
-            >
-              <option value="highest_fine">Highest Balance (₱)</option>
-              <option value="lowest_fine">Lowest Balance (₱)</option>
-              <option value="most_absences">Most Absences</option>
-              <option value="name_asc">Name (A-Z)</option>
-            </select>
-          </div>
-        </div>
-
-        {/* Ledger Table */}
-        {filteredLedger.length === 0 ? (
-          <div className="p-8 text-center text-xs font-bold text-slate-400 uppercase tracking-wider">
-            No liable students found matching your criteria.
-          </div>
-        ) : (
-          <div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm text-slate-600">
-                <thead className="bg-slate-50 border-y border-slate-200/80 text-[11px] font-bold text-slate-500 uppercase tracking-wider">
-                  <tr>
-                    <th className="px-6 py-3.5">Student Profile</th>
-                    <th className="px-6 py-3.5">Program</th>
-                    <th className="px-6 py-3.5">Year & Section</th>
-                    <th className="px-6 py-3.5">Unexcused Absences</th>
-                    <th className="px-6 py-3.5 text-right">Total Fine Balance</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 font-medium text-xs">
-                  {paginatedLedger.map((student) => (
-                    <tr key={student.id} className="hover:bg-slate-50/60 transition">
-                      <td className="px-6 py-3.5">
-                        <div className="flex items-center gap-3">
-                          <div className="w-8 h-8 rounded-full bg-slate-200 overflow-hidden flex-shrink-0 flex items-center justify-center border border-slate-300">
-                            {student.avatarUrl ? (
-                              <img src={student.avatarUrl} alt="Avatar" className="w-full h-full object-cover" />
-                            ) : (
-                              <span className="font-black text-[11px] text-slate-600">
-                                {student.fullName?.charAt(0) || 'S'}
-                              </span>
-                            )}
-                          </div>
-                          <div>
-                            <p className="font-bold text-slate-900">{student.fullName}</p>
-                            <p className="text-slate-400 font-mono text-[11px]">{student.studentId}</p>
-                          </div>
-                        </div>
-                      </td>
-                      <td className="px-6 py-3.5">
-                        <span className="font-bold text-slate-800">{student.course}</span>
-                      </td>
-                      <td className="px-6 py-3.5 font-mono text-slate-700">
-                        {student.yearLevel ? `${student.yearLevel}${student.section}` : 'N/A'}
-                      </td>
-                      <td className="px-6 py-3.5">
-                        <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-black uppercase bg-red-50 text-red-700 border border-red-200">
-                          {student.absenceCount} Absent {student.absenceCount === 1 ? 'Event' : 'Events'}
-                        </span>
-                      </td>
-                      <td className="px-6 py-3.5 text-right">
-                        <span className="font-black text-sm text-[#8b0000]">
-                          ₱{student.totalDue.toFixed(2)}
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div>
+              <div className="flex justify-between text-xs font-bold text-slate-700 mb-1">
+                <span>Civil Engineering (BSCE)</span>
+                <span className="text-blue-600">{analytics.departmentTurnout.BSCE}%</span>
+              </div>
+              <div className="w-full bg-slate-100 h-2.5 rounded-full overflow-hidden">
+                <div className="bg-blue-600 h-full rounded-full" style={{ width: `${Math.min(100, analytics.departmentTurnout.BSCE)}%` }} />
+              </div>
             </div>
 
-            {/* Pagination Controls */}
-            <div className="p-4 border-t border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs">
-              <span className="text-slate-500 font-medium">
-                Showing{' '}
-                <span className="font-bold text-slate-800">
-                  {(currentPage - 1) * itemsPerPage + 1}
-                </span>{' '}
-                to{' '}
-                <span className="font-bold text-slate-800">
-                  {Math.min(currentPage * itemsPerPage, filteredLedger.length)}
-                </span>{' '}
-                of <span className="font-bold text-slate-800">{filteredLedger.length}</span> students
-              </span>
-
-              <div className="flex items-center gap-1.5">
-                <button
-                  onClick={() => handlePageChange(currentPage - 1)}
-                  disabled={currentPage === 1}
-                  className="px-3 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 font-bold disabled:opacity-40 disabled:cursor-not-allowed transition cursor-pointer"
-                >
-                  Previous
-                </button>
-
-                <div className="flex items-center gap-1">
-                  {Array.from({ length: totalPages }, (_, i) => i + 1).map((pageNum) => (
-                    <button
-                      key={pageNum}
-                      onClick={() => handlePageChange(pageNum)}
-                      className={`w-7 h-7 rounded-lg text-xs font-bold transition cursor-pointer ${
-                        currentPage === pageNum
-                          ? 'bg-[#8b0000] text-white shadow-sm'
-                          : 'bg-white hover:bg-slate-50 border border-slate-200 text-slate-700'
-                      }`}
-                    >
-                      {pageNum}
-                    </button>
-                  ))}
-                </div>
-
-                <button
-                  onClick={() => handlePageChange(currentPage + 1)}
-                  disabled={currentPage === totalPages}
-                  className="px-3 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 font-bold disabled:opacity-40 disabled:cursor-not-allowed transition cursor-pointer"
-                >
-                  Next
-                </button>
+            <div>
+              <div className="flex justify-between text-xs font-bold text-slate-700 mb-1">
+                <span>Electrical Engineering (BSEE)</span>
+                <span className="text-emerald-600">{analytics.departmentTurnout.BSEE}%</span>
+              </div>
+              <div className="w-full bg-slate-100 h-2.5 rounded-full overflow-hidden">
+                <div className="bg-emerald-600 h-full rounded-full" style={{ width: `${Math.min(100, analytics.departmentTurnout.BSEE)}%` }} />
               </div>
             </div>
           </div>
-        )}
+        </div>
+
+        {/* Peak Check-in Timing Distribution */}
+        <div className="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-sm space-y-5">
+          <div>
+            <h3 className="text-sm font-black uppercase tracking-wider text-slate-800">Peak Check-In Distribution</h3>
+            <p className="text-xs text-slate-400 font-medium mt-0.5">Time periods when students arrive and scan QR codes</p>
+          </div>
+
+          <div className="grid grid-cols-3 gap-4 pt-4 text-center">
+            <div className="p-4 bg-slate-50 rounded-xl border border-slate-100">
+              <p className="text-[10px] font-bold text-slate-400 uppercase">Morning (6 AM - 12 PM)</p>
+              <p className="text-2xl font-black text-slate-800 mt-2">{analytics.turnoutTiming.morning}</p>
+              <span className="text-[10px] font-bold text-slate-500">Scans</span>
+            </div>
+
+            <div className="p-4 bg-slate-50 rounded-xl border border-slate-100">
+              <p className="text-[10px] font-bold text-slate-400 uppercase">Afternoon (12 PM - 6 PM)</p>
+              <p className="text-2xl font-black text-slate-800 mt-2">{analytics.turnoutTiming.afternoon}</p>
+              <span className="text-[10px] font-bold text-slate-500">Scans</span>
+            </div>
+
+            <div className="p-4 bg-slate-50 rounded-xl border border-slate-100">
+              <p className="text-[10px] font-bold text-slate-400 uppercase">Evening (6 PM Onwards)</p>
+              <p className="text-2xl font-black text-slate-800 mt-2">{analytics.turnoutTiming.evening}</p>
+              <span className="text-[10px] font-bold text-slate-500">Scans</span>
+            </div>
+          </div>
+        </div>
       </div>
 
-      {/* 4. DUAL ACTIVITY PREVIEW TABLES */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Recent Events Table */}
-        <div className="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-sm space-y-4">
-          <div className="flex justify-between items-center">
-            <h3 className="text-sm font-black uppercase tracking-wider text-slate-800">Recent Assemblies</h3>
-            <span className="text-[11px] text-slate-400 font-bold uppercase">Latest 4</span>
+      {/* 4. EVENT PERFORMANCE LEADERBOARD TABLE */}
+      <div className="bg-white rounded-2xl border border-slate-200/80 shadow-sm overflow-hidden">
+        <div className="p-6 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center">
+          <div>
+            <h3 className="text-sm font-black uppercase tracking-wider text-slate-800">Event Attendance Leaderboard</h3>
+            <p className="text-xs text-slate-400 font-medium mt-0.5">Assemblies ranked by highest student participation</p>
           </div>
-
-          {recentEvents.length === 0 ? (
-            <p className="text-xs text-slate-400 py-6 text-center">No events listed yet.</p>
-          ) : (
-            <div className="divide-y divide-slate-100">
-              {recentEvents.map((evt) => (
-                <div key={evt.id} className="py-3 flex justify-between items-center">
-                  <div>
-                    <p className="text-xs font-bold text-slate-800">{evt.title}</p>
-                    <p className="text-[11px] text-slate-400">{evt.location || 'Campus Hall'}</p>
-                  </div>
-                  <div className="text-right">
-                    <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded-md bg-slate-100 text-slate-700">
-                      {evt.status}
-                    </span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
+          <span className="text-xs font-bold text-slate-500">{analytics.eventStats.length} Total Events</span>
         </div>
 
-        {/* Recent Sanction Submissions */}
-        <div className="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-sm space-y-4">
-          <div className="flex justify-between items-center">
-            <h3 className="text-sm font-black uppercase tracking-wider text-slate-800">Fine Audit Feed</h3>
-            <span className="text-[11px] text-slate-400 font-bold uppercase">Latest 4</span>
+        {analytics.eventStats.length === 0 ? (
+          <div className="p-12 text-center text-xs font-bold text-slate-400 uppercase">No events recorded for this selection.</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm text-slate-600">
+              <thead className="bg-slate-50 border-b border-slate-200 text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                <tr>
+                  <th className="px-6 py-4">Assembly / Event Title</th>
+                  <th className="px-6 py-4">Scheduled Date</th>
+                  <th className="px-6 py-4 text-right">Verified Check-Ins</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 font-medium text-xs">
+                {analytics.eventStats.map((evt, index) => (
+                  <tr key={evt.id} className="hover:bg-slate-50/50 transition">
+                    <td className="px-6 py-4">
+                      <div className="flex items-center gap-3">
+                        <span className="w-6 h-6 rounded-full bg-slate-100 text-slate-600 font-bold flex items-center justify-center text-[11px]">
+                          {index + 1}
+                        </span>
+                        <span className="font-bold text-slate-900">{evt.title}</span>
+                      </div>
+                    </td>
+                    <td className="px-6 py-4 text-slate-500">
+                      {new Date(evt.startTime).toLocaleDateString()} • {new Date(evt.startTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </td>
+                    <td className="px-6 py-4 text-right">
+                      <span className="inline-block px-3 py-1 bg-emerald-50 text-emerald-700 font-black text-xs rounded-md border border-emerald-200">
+                        {evt.checkIns} Students
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
-
-          {recentFines.length === 0 ? (
-            <p className="text-xs text-slate-400 py-6 text-center">No sanctions recorded.</p>
-          ) : (
-            <div className="divide-y divide-slate-100">
-              {recentFines.map((fine, idx) => (
-                <div key={idx} className="py-3 flex justify-between items-center">
-                  <div>
-                    <p className="text-xs font-bold text-slate-800">
-                      {fine.profiles?.full_name || 'Engineering Student'}
-                    </p>
-                    <p className="text-[11px] text-slate-400">{fine.events?.title || 'General Event'}</p>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-xs font-black text-[#8b0000]">₱{parseFloat(fine.amount).toFixed(2)}</p>
-                    <span
-                      className={`text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded ${
-                        fine.status === 'paid' ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'
-                      }`}
-                    >
-                      {fine.status}
-                    </span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+        )}
       </div>
     </div>
   );
