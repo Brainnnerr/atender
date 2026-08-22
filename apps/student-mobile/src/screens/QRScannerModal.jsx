@@ -37,7 +37,9 @@ export default function QRScannerModal({ visible, profile, onClose, onScanComple
     setValidating(false);
   }
 }, [visible]);
- const handleBarcodeScanned = async ({ data }) => {
+
+
+const handleBarcodeScanned = async ({ data }) => {
     if (scanned || step !== 'SCAN' || validating) return;
     setScanned(true);
 
@@ -51,29 +53,63 @@ export default function QRScannerModal({ visible, profile, onClose, onScanComple
 
       setValidating(true);
 
-      // Instant live database check
-      const { data: eventData, error: evErr } = await supabase
-        .from('events')
-        .select('id, title, start_time, end_time, fine_amount, attendance_access')
-        .eq('id', payload.eventId)
-        .single();
+      let eventData = null;
+      let existingAttendance = null;
 
-      if (evErr || !eventData) {
-        Alert.alert('Error', 'Event session could not be found.');
-        setScanned(false);
-        setValidating(false);
-        return;
+      // 1. TRY ONLINE LIVE CHECK FIRST
+      try {
+        const { data: liveEventData, error: evErr } = await supabase
+          .from('events')
+          .select('id, title, start_time, end_time, fine_amount, attendance_access')
+          .eq('id', payload.eventId)
+          .single();
+
+        if (!evErr && liveEventData) {
+          eventData = liveEventData;
+        }
+
+        const { data: liveAttendance, error: checkErr } = await supabase
+          .from('attendance')
+          .select('*')
+          .eq('event_id', payload.eventId)
+          .eq('student_id', profile.id)
+          .maybeSingle();
+
+        if (!checkErr) {
+          existingAttendance = liveAttendance;
+        }
+      } catch (networkErr) {
+        console.log('Network unreachable, switching to offline cache lookup...');
       }
 
-      // ---> ADD DUPLICATE SCAN CHECK HERE <---
-      const { data: existingAttendance, error: checkErr } = await supabase
-        .from('attendance')
-        .select('*')
-        .eq('event_id', payload.eventId)
-        .eq('student_id', profile.id)
-        .maybeSingle();
+      // 2. IF ONLINE FETCH FAILED, FALLBACK TO LOCAL ASYNCSTORAGE CACHE
+      if (!eventData) {
+        try {
+          const cachedEventsStr = await AsyncStorage.getItem(`@cached_events_${profile.id}`);
+          const cachedEvents = cachedEventsStr ? JSON.parse(cachedEventsStr) : [];
+          eventData = cachedEvents.find(e => e.id === payload.eventId);
+        } catch (e) {
+          eventData = null;
+        }
 
-      if (checkErr) throw checkErr;
+        if (!eventData) {
+          Alert.alert('Offline Error', 'Event details not found locally. Please connect to the internet at least once before the event.');
+          setScanned(false);
+          setValidating(false);
+          return;
+        }
+      }
+
+      // Check local offline queue for duplicates if online check didn't catch it
+      if (!existingAttendance) {
+        try {
+          const localQueueStr = await AsyncStorage.getItem('@offline_scans');
+          const localQueue = localQueueStr ? JSON.parse(localQueueStr) : [];
+          existingAttendance = localQueue.find(item => item.eventId === payload.eventId && item.studentId === profile.id);
+        } catch (e) {
+          existingAttendance = null;
+        }
+      }
 
       if (existingAttendance) {
         Alert.alert('Already Scanned', 'You have already checked in for this event!');
@@ -81,7 +117,6 @@ export default function QRScannerModal({ visible, profile, onClose, onScanComple
         onClose();
         return;
       }
-      // ----------------------------------------
 
       const now = new Date().getTime();
       const start = new Date(eventData.start_time).getTime();
@@ -93,14 +128,11 @@ export default function QRScannerModal({ visible, profile, onClose, onScanComple
       else if (access === 'force_closed') isOpen = false;
       else isOpen = now >= start && now <= end;
 
-      // HARD REJECTION IF EXPIRED OR CLOSED
       if (!isOpen) {
-        await supabase.rpc('process_expired_event_fines').catch(() => null);
-
         Alert.alert(
           'QR SCANNING LOCKED',
           now > end || access === 'force_closed'
-            ? `SESSION EXPIRED: Attendance for "${eventData.title}" is CLOSED.\n\nYou have been marked absent and fined ₱${parseFloat(eventData.fine_amount || 0).toFixed(2)}.`
+            ? `SESSION EXPIRED: Attendance for "${eventData.title}" is CLOSED.`
             : `SESSION NOT STARTED: Attendance for "${eventData.title}" will open at ${new Date(eventData.start_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.`
         );
 
@@ -109,11 +141,11 @@ export default function QRScannerModal({ visible, profile, onClose, onScanComple
         return;
       }
 
-      // Session is OPEN: proceed to verification selfie
+      // Session is valid: proceed to verification selfie
       setScannedData(payload);
       setFacing('front');
       setStep('SELFIE');
-    } catch {
+    } catch (err) {
       Alert.alert('Error', 'Unable to process QR code.');
       setScanned(false);
     } finally {
@@ -122,57 +154,56 @@ export default function QRScannerModal({ visible, profile, onClose, onScanComple
   };
 
   const handleTakeSelfie = async () => {
-  if (!cameraRef.current) return;
-  setStep('UPLOADING');
-
-  try {
-    const photo = await cameraRef.current.takePictureAsync({
-      base64: true,
-      quality: 0.2,
-      skipProcessing: true,
-    });
-
-    const photoBase64 = `data:image/jpeg;base64,${photo.base64}`;
-
-    // Try sending to Supabase
-    const { data: res, error: rpcErr } = await supabase.rpc('record_student_attendance', {
-      p_event_id: scannedData.eventId,
-      p_student_id: profile.id,
-      p_proof_photo_url: photoBase64,
-    });
-
-    if (rpcErr || !res?.success) {
-      throw new Error(res?.message || rpcErr?.message || 'Network request failed');
-    }
-
-    Alert.alert('Attendance Verified!', 'Your presence has been recorded.');
-    if (onScanComplete) onScanComplete();
-    onClose();
-
-  } catch (err) {
-    // IF OFFLINE OR NETWORK FAILS: Save locally to SQLite instead!
-    console.log("Network error, saving offline...", err.message);
+    if (!cameraRef.current) return;
+    setStep('UPLOADING');
 
     try {
-      // Grab the captured photo from state or local variable if stored
-      const photo = await cameraRef.current.takePictureAsync({ base64: true, quality: 0.1 });
-      const fallbackBase64 = `data:image/jpeg;base64,${photo.base64}`;
+      const photo = await cameraRef.current.takePictureAsync({
+        base64: true,
+        quality: 0.2,
+        skipProcessing: true,
+      });
 
-      queueOfflineAttendance(scannedData.eventId, profile.id, fallbackBase64);
+      const photoBase64 = `data:image/jpeg;base64,${photo.base64}`;
 
-      Alert.alert(
-        'Saved Offline 📴', 
-        'No internet connection detected. Your attendance proof has been saved securely on your device and will sync automatically when you reconnect.'
-      );
+      // ATTEMPT ONLINE UPLOAD TO SUPABASE FIRST
+      const { data: res, error: rpcErr } = await supabase.rpc('record_student_attendance', {
+        p_event_id: scannedData.eventId,
+        p_student_id: profile.id,
+        p_proof_photo_url: photoBase64,
+      });
 
+      if (rpcErr || !res?.success) {
+        throw new Error(res?.message || rpcErr?.message || 'Network request failed');
+      }
+
+      Alert.alert('Attendance Verified!', 'Your presence has been recorded to the server.');
       if (onScanComplete) onScanComplete();
       onClose();
-    } catch (offlineErr) {
-      Alert.alert('Error', 'Could not process attendance offline.');
-      setStep('SELFIE');
+
+    } catch (err) {
+      // ONLY IF IT'S A TRUE NETWORK/OFFLINE FAILURE, SAVE LOCALLY
+      console.log("Online upload failed, saving to offline queue...", err.message);
+
+      try {
+        const photo = await cameraRef.current.takePictureAsync({ base64: true, quality: 0.1 });
+        const fallbackBase64 = `data:image/jpeg;base64,${photo.base64}`;
+
+        queueOfflineAttendance(scannedData.eventId, profile.id, fallbackBase64);
+
+        Alert.alert(
+          'Saved Offline 📴', 
+          'No internet connection detected. Your attendance proof has been saved securely on your device and will sync automatically when you reconnect.'
+        );
+
+        if (onScanComplete) onScanComplete();
+        onClose();
+      } catch (offlineErr) {
+        Alert.alert('Error', 'Could not process attendance offline.');
+        setStep('SELFIE');
+      }
     }
-  }
-};
+  };
 
   return (
     <Modal

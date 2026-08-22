@@ -9,6 +9,7 @@ import {
   Platform,
 } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../services/supabase';
 
@@ -64,72 +65,71 @@ export default function StudentDashboard({ profile: initialProfile, onSignOut })
     try {
       if (!refreshing) setLoading(true);
 
-      console.log('--- STARTING DASHBOARD LOAD ---');
-      console.log('Student User ID:', studentUserId);
-
       if (!studentUserId) {
-        console.warn('⚠️ No studentUserId found! Profile prop:', initialProfile);
         if (onSignOut) onSignOut();
         return;
       }
 
-      // 1. Skip RPC for a moment or catch it visibly
-      try {
-        await supabase.rpc('sync_absent_student_fines');
-      } catch (rpcErr) {
-        console.log('RPC sync_absent_student_fines skipped/errored:', rpcErr.message);
-      }
-
-      // 2. Fetch Events
-      console.log('Fetching events...');
+      // 1. Try fetching events from Supabase
       const { data: eventsData, error: eventsErr } = await supabase
         .from('events')
         .select('*')
         .order('start_time', { ascending: false });
 
-      if (eventsErr) console.error('Events Error:', eventsErr.message);
-      else console.log('Events fetched successfully:', eventsData?.length);
+      if (eventsErr) throw eventsErr;
 
-      setEvents(eventsData || []);
+      // If successful, save events locally for offline use
+      if (eventsData) {
+        setEvents(eventsData);
+        await AsyncStorage.setItem(`@cached_events_${studentUserId}`, JSON.stringify(eventsData));
+      }
 
-      // 3. Fetch Attendance Logs
+      // 2. Try fetching Attendance Logs
       const { data: attendanceData, error: attErr } = await supabase
         .from('attendance')
         .select('event_id, time_in, time_out, status')
         .eq('student_id', studentUserId);
 
-      if (attErr) console.error('Attendance Error:', attErr.message);
-
-      if (!attErr) {
+      if (!attErr && attendanceData) {
         const attendanceMap = {};
-        (attendanceData || []).forEach((rec) => {
+        attendanceData.forEach((rec) => {
           attendanceMap[rec.event_id] = rec;
         });
         setAttendanceRecords(attendanceMap);
+        await AsyncStorage.setItem(`@cached_attendance_${studentUserId}`, JSON.stringify(attendanceMap));
       }
 
-      // 4. Fetch Total Unpaid Fines
+      // 3. Try fetching Fines
       const { data: finesData, error: finesErr } = await supabase
         .from('fines')
         .select('amount, status')
         .eq('student_id', studentUserId)
         .in('status', ['unpaid', 'pending_approval']);
 
-      if (finesErr) console.error('Fines Error:', finesErr.message);
-
       if (!finesErr && finesData) {
-        const sum = finesData.reduce(
-          (acc, curr) => acc + (parseFloat(curr.amount) || 0),
-          0
-        );
+        const sum = finesData.reduce((acc, curr) => acc + (parseFloat(curr.amount) || 0), 0);
         setTotalFines(sum);
+        await AsyncStorage.setItem(`@cached_fines_${studentUserId}`, JSON.stringify(sum));
       }
+
     } catch (err) {
-      console.error('CRITICAL Dashboard load error:', err);
+      console.log('No internet connection. Loading cached dashboard data...', err.message);
+
+      // OFFLINE FALLBACK: Load from AsyncStorage so the app doesn't break
+      try {
+        const cachedEvents = await AsyncStorage.getItem(`@cached_events_${studentUserId}`);
+        const cachedAttendance = await AsyncStorage.getItem(`@cached_attendance_${studentUserId}`);
+        const cachedFines = await AsyncStorage.getItem(`@cached_fines_${studentUserId}`);
+
+        if (cachedEvents) setEvents(JSON.parse(cachedEvents));
+        if (cachedAttendance) setAttendanceRecords(JSON.parse(cachedAttendance));
+        if (cachedFines) setTotalFines(JSON.parse(cachedFines));
+      } catch (cacheErr) {
+        console.log('Error loading offline cache:', cacheErr);
+      }
     } finally {
       setLoading(false);
       setRefreshing(false);
-      console.log('--- DASHBOARD LOAD COMPLETE ---');
     }
   };
 
