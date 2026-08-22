@@ -13,6 +13,8 @@ import {
 } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { Ionicons } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Location from 'expo-location';
 import { supabase } from '../services/supabase';
 import { initOfflineDB, queueOfflineAttendance } from '../services/offlineDb';
 
@@ -28,18 +30,17 @@ export default function QRScannerModal({ visible, profile, onClose, onScanComple
   const cameraRef = useRef(null);
 
   useEffect(() => {
-  if (visible) {
-    initOfflineDB(); // Initialize table
-    setScanned(false);
-    setStep('SCAN');
-    setScannedData(null);
-    setFacing('back');
-    setValidating(false);
-  }
-}, [visible]);
+    if (visible) {
+      initOfflineDB(); // Initialize table
+      setScanned(false);
+      setStep('SCAN');
+      setScannedData(null);
+      setFacing('back');
+      setValidating(false);
+    }
+  }, [visible]);
 
-
-const handleBarcodeScanned = async ({ data }) => {
+  const handleBarcodeScanned = async ({ data }) => {
     if (scanned || step !== 'SCAN' || validating) return;
     setScanned(true);
 
@@ -166,23 +167,47 @@ const handleBarcodeScanned = async ({ data }) => {
 
       const photoBase64 = `data:image/jpeg;base64,${photo.base64}`;
 
-      // ATTEMPT ONLINE UPLOAD TO SUPABASE FIRST
+      // 1. Request GPS permission and get current location for geofencing validation
+      let currentLat = null;
+      let currentLon = null;
+
+      try {
+        let { status } = await Location.requestForegroundPermissionsAsync();
+        if (status === 'granted') {
+          let location = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+          currentLat = location.coords.latitude;
+          currentLon = location.coords.longitude;
+        }
+      } catch (locErr) {
+        console.log('Location fetch warning:', locErr);
+      }
+
+      // 2. ATTEMPT ONLINE UPLOAD & GEOFENCING CHECK VIA SUPABASE RPC
       const { data: res, error: rpcErr } = await supabase.rpc('record_student_attendance', {
         p_event_id: scannedData.eventId,
         p_student_id: profile.id,
         p_proof_photo_url: photoBase64,
+        p_latitude: currentLat,
+        p_longitude: currentLon,
       });
 
       if (rpcErr || !res?.success) {
         throw new Error(res?.message || rpcErr?.message || 'Network request failed');
       }
 
-      Alert.alert('Attendance Verified!', 'Your presence has been recorded to the server.');
+      Alert.alert('Attendance Verified!', res.message || 'Your presence has been recorded to the server.');
       if (onScanComplete) onScanComplete();
       onClose();
 
     } catch (err) {
-      // ONLY IF IT'S A TRUE NETWORK/OFFLINE FAILURE, SAVE LOCALLY
+      // If it's a geofencing block or validation failure, show the specific message and let them retry
+      if (err.message && err.message.toLowerCase().includes('out of range')) {
+        Alert.alert('Out of Range 🚫', err.message);
+        setStep('SELFIE');
+        return;
+      }
+
+      // OTHERWISE IF IT'S A TRUE NETWORK/OFFLINE FAILURE, SAVE LOCALLY
       console.log("Online upload failed, saving to offline queue...", err.message);
 
       try {
@@ -286,7 +311,7 @@ const handleBarcodeScanned = async ({ data }) => {
               {step === 'UPLOADING' && (
                 <View style={styles.uploadingContainer}>
                   <ActivityIndicator size="large" color="#ffffff" />
-                  <Text style={styles.uploadingText}>Verifying Attendance Window...</Text>
+                  <Text style={styles.uploadingText}>Verifying Location & Attendance...</Text>
                 </View>
               )}
             </View>
