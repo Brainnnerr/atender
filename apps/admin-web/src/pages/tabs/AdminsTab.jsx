@@ -206,9 +206,9 @@ export default function AdminsTab({ currentUser }) {
 
   return (
     <div className="space-y-6 max-w-7xl mx-auto relative">
-      {/* Toast Notification */}
+     {/* Toast Notification */}
       {toast.show && (
-        <div className="fixed top-6 right-6 z-50 animate-bounce">
+        <div className="fixed top-6 right-6 z-[100] animate-bounce">
           <div
             className={`px-4 py-3 rounded-xl shadow-xl flex items-center gap-3 border text-xs font-bold ${
               toast.type === 'error'
