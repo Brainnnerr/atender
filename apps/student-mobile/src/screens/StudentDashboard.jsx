@@ -70,21 +70,46 @@ export default function StudentDashboard({ profile: initialProfile, onSignOut })
         return;
       }
 
-      // 1. Try fetching events from Supabase
+      // 1. Fetch Fines first to track total unpaid balance and paid events
+      const { data: finesData, error: finesErr } = await supabase
+        .from('fines')
+        .select('amount, status, event_id')
+        .eq('student_id', studentUserId);
+
+      let paidEventIds = [];
+      let totalUnpaidSum = 0;
+
+      if (!finesErr && finesData) {
+        finesData.forEach((f) => {
+          if (String(f.status || '').toLowerCase() === 'paid' && f.event_id) {
+            paidEventIds.push(f.event_id);
+          }
+          if (['unpaid', 'pending_approval'].includes(String(f.status || '').toLowerCase())) {
+            totalUnpaidSum += parseFloat(f.amount) || 0;
+          }
+        });
+        setTotalFines(totalUnpaidSum);
+        await AsyncStorage.setItem(`@cached_fines_${studentUserId}`, JSON.stringify(totalUnpaidSum));
+      }
+
+      // 2. Fetch all events (ignoring events marked hidden or paid off by the student)
       const { data: eventsData, error: eventsErr } = await supabase
         .from('events')
         .select('*')
+        .eq('hidden_from_student', false)
         .order('start_time', { ascending: false });
 
       if (eventsErr) throw eventsErr;
 
-      // If successful, save events locally for offline use
-      if (eventsData) {
-        setEvents(eventsData);
-        await AsyncStorage.setItem(`@cached_events_${studentUserId}`, JSON.stringify(eventsData));
+      // Filter out any events that the student has already settled/paid
+      const activeEvents = (eventsData || []).filter(evt => !paidEventIds.includes(evt.id));
+
+      if (activeEvents) {
+        setEvents(activeEvents);
+        await AsyncStorage.setItem(`@cached_events_${studentUserId}`, JSON.stringify(activeEvents));
       }
 
-      // 2. Try fetching Attendance Logs
+      // 3. Fetch Attendance Logs
       const { data: attendanceData, error: attErr } = await supabase
         .from('attendance')
         .select('event_id, time_in, time_out, status')
@@ -99,23 +124,10 @@ export default function StudentDashboard({ profile: initialProfile, onSignOut })
         await AsyncStorage.setItem(`@cached_attendance_${studentUserId}`, JSON.stringify(attendanceMap));
       }
 
-      // 3. Try fetching Fines
-      const { data: finesData, error: finesErr } = await supabase
-        .from('fines')
-        .select('amount, status')
-        .eq('student_id', studentUserId)
-        .in('status', ['unpaid', 'pending_approval']);
-
-      if (!finesErr && finesData) {
-        const sum = finesData.reduce((acc, curr) => acc + (parseFloat(curr.amount) || 0), 0);
-        setTotalFines(sum);
-        await AsyncStorage.setItem(`@cached_fines_${studentUserId}`, JSON.stringify(sum));
-      }
-
     } catch (err) {
       console.log('No internet connection. Loading cached dashboard data...', err.message);
 
-      // OFFLINE FALLBACK: Load from AsyncStorage so the app doesn't break
+      // OFFLINE FALLBACK
       try {
         const cachedEvents = await AsyncStorage.getItem(`@cached_events_${studentUserId}`);
         const cachedAttendance = await AsyncStorage.getItem(`@cached_attendance_${studentUserId}`);
