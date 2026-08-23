@@ -17,6 +17,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Location from 'expo-location';
 import { supabase } from '../services/supabase';
 import { initOfflineDB, queueOfflineAttendance } from '../services/offlineDb';
+import { Html5QrcodeScanner } from 'html5-qrcode';
 
 const { width, height } = Dimensions.get('window');
 
@@ -29,6 +30,18 @@ export default function QRScannerModal({ visible, profile, onClose, onScanComple
   const [validating, setValidating] = useState(false);
   const cameraRef = useRef(null);
 
+  // Web browser webcam references for selfie capture
+  const webVideoRef = useRef(null);
+  const webCanvasRef = useRef(null);
+  const [webMediaStream, setWebMediaStream] = useState(null);
+
+  const stopWebcam = () => {
+    if (webMediaStream) {
+      webMediaStream.getTracks().forEach(track => track.stop());
+      setWebMediaStream(null);
+    }
+  };
+
   useEffect(() => {
     if (visible) {
       initOfflineDB(); // Initialize table
@@ -37,8 +50,29 @@ export default function QRScannerModal({ visible, profile, onClose, onScanComple
       setScannedData(null);
       setFacing('back');
       setValidating(false);
+      stopWebcam();
+
+      if (Platform.OS === 'web') {
+        setTimeout(() => {
+          const scanner = new Html5QrcodeScanner(
+            'web-qr-reader-container',
+            { fps: 10, qrbox: { width: 250, height: 250 } },
+            false
+          );
+         scanner.render(
+            (decodedText) => {
+              scanner.clear().catch(err => console.warn('Scanner clear error:', err));
+              handleBarcodeScanned({ data: decodedText }); // <--- Make sure this passes { data: decodedText }
+            },
+            (error) => {}
+          );
+        }, 300);
+      }
+    } else {
+      stopWebcam();
     }
   }, [visible]);
+
 
   const handleBarcodeScanned = async ({ data }) => {
     if (scanned || step !== 'SCAN' || validating) return;
@@ -146,6 +180,18 @@ export default function QRScannerModal({ visible, profile, onClose, onScanComple
       setScannedData(payload);
       setFacing('front');
       setStep('SELFIE');
+      if (Platform.OS === 'web') {
+        setTimeout(async () => {
+          try {
+            const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } });
+            setWebMediaStream(stream);
+            if (webVideoRef.current) webVideoRef.current.srcObject = stream;
+          } catch (e) {
+            alert('Camera access denied for selfie.');
+          }
+        }, 200);
+      }
+
     } catch (err) {
       Alert.alert('Error', 'Unable to process QR code.');
       setScanned(false);
@@ -154,34 +200,55 @@ export default function QRScannerModal({ visible, profile, onClose, onScanComple
     }
   };
 
-  const handleTakeSelfie = async () => {
-    if (!cameraRef.current) return;
+ const handleTakeSelfie = async () => {
     setStep('UPLOADING');
 
     try {
-      const photo = await cameraRef.current.takePictureAsync({
-        base64: true,
-        quality: 0.2,
-        skipProcessing: true,
-      });
+      let photoBase64 = '';
 
-      const photoBase64 = `data:image/jpeg;base64,${photo.base64}`;
+      if (Platform.OS === 'web') {
+        if (!webVideoRef.current || !webCanvasRef.current) throw new Error('Web camera not ready');
+        const video = webVideoRef.current;
+        const canvas = webCanvasRef.current;
+        canvas.width = video.videoWidth || 320;
+        canvas.height = video.videoHeight || 240;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        photoBase64 = canvas.toDataURL('image/jpeg', 0.3);
+        stopWebcam();
+      } else {
+        if (!cameraRef.current) return;
+        const photo = await cameraRef.current.takePictureAsync({
+          base64: true,
+          quality: 0.2,
+          skipProcessing: true,
+        });
+        photoBase64 = `data:image/jpeg;base64,${photo.base64}`;
+      }
 
       // 1. Request GPS permission and get current location for geofencing validation
       let currentLat = null;
       let currentLon = null;
 
       try {
-        let { status } = await Location.requestForegroundPermissionsAsync();
-        if (status === 'granted') {
-          let location = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
-          currentLat = location.coords.latitude;
-          currentLon = location.coords.longitude;
+        if (Platform.OS === 'web') {
+          const position = await new Promise((res, rej) => 
+            navigator.geolocation.getCurrentPosition(res, rej, { enableHighAccuracy: true })
+          );
+          currentLat = position.coords.latitude;
+          currentLon = position.coords.longitude;
+        } else {
+          let { status } = await Location.requestForegroundPermissionsAsync();
+          if (status === 'granted') {
+            let location = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+            currentLat = location.coords.latitude;
+            currentLon = location.coords.longitude;
+          }
         }
       } catch (locErr) {
         console.log('Location fetch warning:', locErr);
       }
-
+      
       // 2. ATTEMPT ONLINE UPLOAD & GEOFENCING CHECK VIA SUPABASE RPC
       const { data: res, error: rpcErr } = await supabase.rpc('record_student_attendance', {
         p_event_id: scannedData.eventId,
@@ -211,6 +278,11 @@ export default function QRScannerModal({ visible, profile, onClose, onScanComple
       console.log("Online upload failed, saving to offline queue...", err.message);
 
       try {
+        // Platform check to prevent web crash on native camera reference
+        if (Platform.OS === 'web') {
+          throw new Error(err.message || 'Network request failed. Please check your connection.');
+        }
+
         const photo = await cameraRef.current.takePictureAsync({ base64: true, quality: 0.1 });
         const fallbackBase64 = `data:image/jpeg;base64,${photo.base64}`;
 
@@ -224,7 +296,7 @@ export default function QRScannerModal({ visible, profile, onClose, onScanComple
         if (onScanComplete) onScanComplete();
         onClose();
       } catch (offlineErr) {
-        Alert.alert('Error', 'Could not process attendance offline.');
+        Alert.alert('Error', offlineErr.message || 'Could not process attendance.');
         setStep('SELFIE');
       }
     }
@@ -241,22 +313,46 @@ export default function QRScannerModal({ visible, profile, onClose, onScanComple
       <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
 
       <View style={styles.fullScreenContainer}>
-        {!permission ? (
-          <View style={styles.centerContainer}>
-            <ActivityIndicator size="large" color="#8b0000" />
-          </View>
-        ) : !permission.granted ? (
-          <View style={styles.centerContainer}>
-            <Ionicons name="camera-outline" size={54} color="#ffffff" style={{ marginBottom: 16 }} />
-            <Text style={styles.permText}>Camera permission is required to scan attendance QR codes.</Text>
-            <TouchableOpacity style={styles.permButton} onPress={requestPermission}>
-              <Text style={styles.permButtonText}>Grant Permission</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={[styles.permButton, { backgroundColor: '#64748b', marginTop: 10 }]} onPress={onClose}>
-              <Text style={styles.permButtonText}>Cancel</Text>
-            </TouchableOpacity>
+        {Platform.OS === 'web' ? (
+          <View style={styles.webContainer}>
+            <View style={styles.topBar}>
+              <View style={styles.headerBadge}>
+                <Text style={styles.headerTitle}>
+                  {step === 'SCAN' ? 'SCAN EVENT QR' : step === 'SELFIE' ? 'TAKE SELFIE' : 'PROCESSING'}
+                </Text>
+              </View>
+              <TouchableOpacity onPress={() => { stopWebcam(); onClose(); }} style={styles.closeBtn}>
+                <Ionicons name="close" size={24} color="#ffffff" />
+              </TouchableOpacity>
+            </View>
+
+            {step === 'SCAN' && (
+              <div style={{ width: '100%', maxWidth: '400px', margin: 'auto', padding: '20px' }}>
+                <div id="web-qr-reader-container" style={{ borderRadius: '16px', overflow: 'hidden', background: '#fff' }} />
+              </div>
+            )}
+
+            {step === 'SELFIE' && (
+              <View style={styles.webSelfieWrapper}>
+                <div style={{ width: '100%', maxWidth: '360px', aspectRatio: '4/3', background: '#000', borderRadius: '16px', overflow: 'hidden', position: 'relative' }}>
+                  <video ref={webVideoRef} autoPlay playsInline muted style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                  <canvas ref={webCanvasRef} style={{ display: 'none' }} />
+                </div>
+                <TouchableOpacity onPress={handleTakeSelfie} style={[styles.permButton, { marginTop: 20 }]}>
+                  <Text style={styles.permButtonText}>Take Selfie & Check In</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {step === 'UPLOADING' && (
+              <View style={styles.centerContainer}>
+                <ActivityIndicator size="large" color="#ffffff" />
+                <Text style={styles.uploadingText}>Verifying Location & Attendance...</Text>
+              </View>
+            )}
           </View>
         ) : (
+
           <View style={StyleSheet.absoluteFillObject}>
             <CameraView
               ref={cameraRef}
@@ -429,6 +525,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     zIndex: 100,
   },
+  webContainer: { flex: 1, backgroundColor: '#0f172a', justifyContent: 'center', alignItems: 'center', padding: 20 },
+  webSelfieWrapper: { alignItems: 'center', justifyContent: 'center', width: '100%' },
+
   uploadingText: { color: '#ffffff', fontSize: 12, fontWeight: '800', marginTop: 14, textTransform: 'uppercase', letterSpacing: 1 },
   permText: { color: '#ffffff', fontSize: 13, textAlign: 'center', marginBottom: 20, lineHeight: 18 },
   permButton: { backgroundColor: '#8b0000', paddingHorizontal: 24, paddingVertical: 12, borderRadius: 12, minWidth: 160, alignItems: 'center' },

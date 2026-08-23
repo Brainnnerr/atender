@@ -16,6 +16,7 @@
     "expo-location": "~19.0.8",
     "expo-sqlite": "~16.0.10",
     "expo-status-bar": "~3.0.9",
+    "html5-qrcode": "^2.3.8",
     "lucide-react-native": "^1.33.0",
     "react": "19.1.0",
     "react-dom": "19.1.0",
