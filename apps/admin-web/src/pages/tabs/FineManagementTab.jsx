@@ -112,10 +112,11 @@ export default function FineManagementTab({ currentUser }) {
     setRemarksModalOpen(true);
   };
 
-  const handleConfirmMarkPaid = async () => {
+const handleConfirmMarkPaid = async () => {
     if (!selectedStudentForAction) return;
 
     try {
+      // 1. Mark the student's fine records as paid
       if (selectedStudentForAction.fineIds && selectedStudentForAction.fineIds.length > 0) {
         const { error } = await supabase
           .from('fines')
@@ -126,9 +127,27 @@ export default function FineManagementTab({ currentUser }) {
           .in('id', selectedStudentForAction.fineIds);
 
         if (error) throw error;
+
+        // 2. Fetch the event IDs tied to these fines so we can hide them from the student view
+        const { data: fineRecords } = await supabase
+          .from('fines')
+          .select('event_id')
+          .in('id', selectedStudentForAction.fineIds);
+
+        const eventIdsToHide = [...new Set((fineRecords || []).map(f => f.event_id).filter(Boolean))];
+
+        // 3. Hide the associated event(s) from the student dashboard
+        if (eventIdsToHide.length > 0) {
+          const { error: eventErr } = await supabase
+            .from('events')
+            .update({ hidden_from_student: true })
+            .in('id', eventIdsToHide);
+
+          if (eventErr) console.warn('Could not hide event from student:', eventErr);
+        }
       }
 
-      showToast('Fines marked as Paid successfully!');
+      showToast('Fines marked as paid and event hidden from student view!');
 
       await logAdminAction({
         currentUser,
