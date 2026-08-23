@@ -56,13 +56,17 @@ export default function QRScannerModal({ visible, profile, onClose, onScanComple
         setTimeout(() => {
           const scanner = new Html5QrcodeScanner(
             'web-qr-reader-container',
-            { fps: 10, qrbox: { width: 250, height: 250 } },
+            { 
+              fps: 10, 
+              qrbox: { width: 250, height: 250 },
+              facingMode: "environment" // Prefers rear camera for scanning
+            },
             false
           );
-         scanner.render(
+          scanner.render(
             (decodedText) => {
               scanner.clear().catch(err => console.warn('Scanner clear error:', err));
-              handleBarcodeScanned({ data: decodedText }); // <--- Make sure this passes { data: decodedText }
+              handleBarcodeScanned({ data: decodedText });
             },
             (error) => {}
           );
@@ -72,7 +76,6 @@ export default function QRScannerModal({ visible, profile, onClose, onScanComple
       stopWebcam();
     }
   }, [visible]);
-
 
   const handleBarcodeScanned = async ({ data }) => {
     if (scanned || step !== 'SCAN' || validating) return;
@@ -180,9 +183,11 @@ export default function QRScannerModal({ visible, profile, onClose, onScanComple
       setScannedData(payload);
       setFacing('front');
       setStep('SELFIE');
+      
       if (Platform.OS === 'web') {
         setTimeout(async () => {
           try {
+            // Forces front camera for the selfie verification step
             const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } });
             setWebMediaStream(stream);
             if (webVideoRef.current) webVideoRef.current.srcObject = stream;
@@ -200,7 +205,7 @@ export default function QRScannerModal({ visible, profile, onClose, onScanComple
     }
   };
 
- const handleTakeSelfie = async () => {
+  const handleTakeSelfie = async () => {
     setStep('UPLOADING');
 
     try {
@@ -267,18 +272,15 @@ export default function QRScannerModal({ visible, profile, onClose, onScanComple
       onClose();
 
     } catch (err) {
-      // If it's a geofencing block or validation failure, show the specific message and let them retry
       if (err.message && err.message.toLowerCase().includes('out of range')) {
         Alert.alert('Out of Range 🚫', err.message);
         setStep('SELFIE');
         return;
       }
 
-      // OTHERWISE IF IT'S A TRUE NETWORK/OFFLINE FAILURE, SAVE LOCALLY
       console.log("Online upload failed, saving to offline queue...", err.message);
 
       try {
-        // Platform check to prevent web crash on native camera reference
         if (Platform.OS === 'web') {
           throw new Error(err.message || 'Network request failed. Please check your connection.');
         }
@@ -327,32 +329,33 @@ export default function QRScannerModal({ visible, profile, onClose, onScanComple
             </View>
 
             {step === 'SCAN' && (
-              <div style={{ width: '100%', maxWidth: '400px', margin: 'auto', padding: '20px' }}>
-                <div id="web-qr-reader-container" style={{ borderRadius: '16px', overflow: 'hidden', background: '#fff' }} />
-              </div>
+              <View style={styles.webScannerCard}>
+                <Text style={styles.webInstructionText}>Align Event QR Code within frame</Text>
+                <div id="web-qr-reader-container" style={{ width: '100%', borderRadius: '16px', overflow: 'hidden', background: '#000' }} />
+              </View>
             )}
 
             {step === 'SELFIE' && (
               <View style={styles.webSelfieWrapper}>
-                <div style={{ width: '100%', maxWidth: '360px', aspectRatio: '4/3', background: '#000', borderRadius: '16px', overflow: 'hidden', position: 'relative' }}>
-                  <video ref={webVideoRef} autoPlay playsInline muted style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                <Text style={styles.selfieGuideText}>Take a quick selfie to verify attendance</Text>
+                <div style={{ width: '100%', maxWidth: '320px', aspectRatio: '3/4', background: '#000', borderRadius: '24px', overflow: 'hidden', position: 'relative', border: '2px solid rgba(255,255,255,0.2)', margin: '16px 0' }}>
+                  <video ref={webVideoRef} autoPlay playsInline muted style={{ width: '100%', height: '100%', objectFit: 'cover', transform: 'scaleX(-1)' }} />
                   <canvas ref={webCanvasRef} style={{ display: 'none' }} />
                 </div>
-                <TouchableOpacity onPress={handleTakeSelfie} style={[styles.permButton, { marginTop: 20 }]}>
-                  <Text style={styles.permButtonText}>Take Selfie & Check In</Text>
+                <TouchableOpacity onPress={handleTakeSelfie} style={styles.shutterBtn} activeOpacity={0.85}>
+                  <View style={styles.shutterInner} />
                 </TouchableOpacity>
               </View>
             )}
 
             {step === 'UPLOADING' && (
-              <View style={styles.centerContainer}>
+              <View style={styles.uploadingContainer}>
                 <ActivityIndicator size="large" color="#ffffff" />
                 <Text style={styles.uploadingText}>Verifying Location & Attendance...</Text>
               </View>
             )}
           </View>
         ) : (
-
           <View style={StyleSheet.absoluteFillObject}>
             <CameraView
               ref={cameraRef}
@@ -363,7 +366,6 @@ export default function QRScannerModal({ visible, profile, onClose, onScanComple
             />
 
             <View style={styles.overlay} pointerEvents="box-none">
-              {/* Top Navigation Bar */}
               <View style={styles.topBar}>
                 <View style={styles.headerBadge}>
                   <Text style={styles.headerTitle}>
@@ -375,7 +377,6 @@ export default function QRScannerModal({ visible, profile, onClose, onScanComple
                 </TouchableOpacity>
               </View>
 
-              {/* Dead Center Frame & Overlay */}
               {step === 'SCAN' && (
                 <View style={styles.centerTargetContainer} pointerEvents="none">
                   <View style={styles.guideBox}>
@@ -391,7 +392,6 @@ export default function QRScannerModal({ visible, profile, onClose, onScanComple
                 </View>
               )}
 
-              {/* Selfie Mode Shutter on Bottom */}
               {step === 'SELFIE' && (
                 <View style={styles.bottomSelfieContainer}>
                   <Text style={styles.selfieGuideText}>
@@ -403,7 +403,6 @@ export default function QRScannerModal({ visible, profile, onClose, onScanComple
                 </View>
               )}
 
-              {/* Uploading State */}
               {step === 'UPLOADING' && (
                 <View style={styles.uploadingContainer}>
                   <ActivityIndicator size="large" color="#ffffff" />
@@ -525,9 +524,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     zIndex: 100,
   },
-  webContainer: { flex: 1, backgroundColor: '#0f172a', justifyContent: 'center', alignItems: 'center', padding: 20 },
-  webSelfieWrapper: { alignItems: 'center', justifyContent: 'center', width: '100%' },
-
+  webContainer: { flex: 1, backgroundColor: '#000000', justifyContent: 'center', alignItems: 'center', padding: 20 },
+  webScannerCard: { width: '100%', maxWidth: '380px', backgroundColor: '#111827', borderRadius: 28, padding: 20, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.1)' },
+  webSelfieWrapper: { alignItems: 'center', justifyContent: 'center', width: '100%', maxWidth: '380px', backgroundColor: '#111827', borderRadius: 28, padding: 20, borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.1)' },
+  webInstructionText: { color: '#ffffff', fontSize: 12, fontWeight: '700', marginBottom: 16, textTransform: 'uppercase', letterSpacing: 1 },
   uploadingText: { color: '#ffffff', fontSize: 12, fontWeight: '800', marginTop: 14, textTransform: 'uppercase', letterSpacing: 1 },
   permText: { color: '#ffffff', fontSize: 13, textAlign: 'center', marginBottom: 20, lineHeight: 18 },
   permButton: { backgroundColor: '#8b0000', paddingHorizontal: 24, paddingVertical: 12, borderRadius: 12, minWidth: 160, alignItems: 'center' },
