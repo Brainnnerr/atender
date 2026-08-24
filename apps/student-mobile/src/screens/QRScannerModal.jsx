@@ -52,14 +52,57 @@ export default function QRScannerModal({ visible, profile, onClose, onScanComple
       setValidating(false);
       stopWebcam();
 
-      if (Platform.OS === 'web') {
+            if (Platform.OS === 'web') {
+        // INJECT CUSTOM CSS TO STYLE PLAIN HTML5-QRCODE BUTTONS
+        const customStyleId = 'html5-qrcode-custom-styles';
+        if (!document.getElementById(customStyleId)) {
+          const style = document.createElement('style');
+          style.id = customStyleId;
+          style.innerHTML = `
+            #web-qr-reader-container button {
+              background-color: #8b0000 !important;
+              color: white !important;
+              font-family: inherit !important;
+              font-size: 11px !important;
+              font-weight: 800 !important;
+              text-transform: uppercase !important;
+              letter-spacing: 0.5px !important;
+              padding: 10px 18px !important;
+              border: none !important;
+              border-radius: 12px !important;
+              cursor: pointer !important;
+              box-shadow: 0 4px 12px rgba(139, 0, 0, 0.3) !important;
+              margin-top: 10px !important;
+              transition: background 0.2s ease !important;
+            }
+            #web-qr-reader-container button:hover {
+              background-color: #a00000 !important;
+            }
+            #web-qr-reader-container select {
+              background-color: #1f2937 !important;
+              color: white !important;
+              font-family: inherit !important;
+              font-size: 11px !important;
+              padding: 8px 12px !important;
+              border: 1px solid rgba(255, 255, 255, 0.2) !important;
+              border-radius: 10px !important;
+              outline: none !important;
+              margin-bottom: 10px !important;
+            }
+            #web-qr-reader-container__dashboard_section_csr button {
+              background-color: #334155 !important;
+            }
+          `;
+          document.head.appendChild(style);
+        }
+
         setTimeout(() => {
           const scanner = new Html5QrcodeScanner(
             'web-qr-reader-container',
             { 
               fps: 10, 
               qrbox: { width: 250, height: 250 },
-              facingMode: "environment" // Prefers rear camera for scanning
+              facingMode: "environment"
             },
             false
           );
@@ -71,7 +114,8 @@ export default function QRScannerModal({ visible, profile, onClose, onScanComple
             (error) => {}
           );
         }, 300);
-      }
+            }
+      
     } else {
       stopWebcam();
     }
