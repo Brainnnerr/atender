@@ -15,7 +15,8 @@ import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../../services/supabase';
 
-export default function SettingsTab({ profile, onSignOut }) {
+// Added 'onOpenChapterScanner' to props
+export default function SettingsTab({ profile, onSignOut, onOpenChapterScanner }) {
   // Password Modal State
   const [passwordModalVisible, setPasswordModalVisible] = useState(false);
   const [currentPassword, setCurrentPassword] = useState('');
@@ -147,6 +148,19 @@ export default function SettingsTab({ profile, onSignOut }) {
     }
   };
 
+  // Determine sub-org display name and theme color based on student course
+  const course = (profile?.course || '').toUpperCase();
+  let subOrgName = '';
+  let themeColor = '#8b0000'; // Default Maroon
+  
+  if (course.includes('BSCE') || course.includes('CIVIL')) {
+    subOrgName = 'PICE Chapter';
+    themeColor = '#b45309'; // Bronze/Amber for PICE
+  } else if (course.includes('BSEE') || course.includes('ELECTRICAL')) {
+    subOrgName = 'IIEE Chapter';
+    themeColor = '#854d0e'; // Dark Amber for IIEE
+  }
+
   return (
     <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
       <View style={styles.topHeader}>
@@ -154,8 +168,29 @@ export default function SettingsTab({ profile, onSignOut }) {
         <Text style={styles.greetingName}>Account Settings</Text>
       </View>
 
+      {/* DEPARTMENT CHAPTER SCANNER BOX (Rendered ONLY if the student belongs to a chapter like PICE or IIEE) */}
+      {subOrgName ? (
+        <View style={styles.card}>
+          <Text style={styles.cardHeader}>{subOrgName} Scanner</Text>
+          <Text style={styles.syncSubStyle}>
+            Scan official event QR codes issued by your department chapter. Main FCO codes or other department codes are strictly restricted here.
+          </Text>
+
+          <TouchableOpacity
+            onPress={onOpenChapterScanner}
+            style={[styles.syncButton, { backgroundColor: themeColor, marginTop: 12 }]}
+            activeOpacity={0.85}
+          >
+            <View style={styles.btnContent}>
+              <Ionicons name="qr-code-outline" size={16} color="#ffffff" style={{ marginRight: 6 }} />
+              <Text style={styles.syncButtonText}>Open {subOrgName} Scanner</Text>
+            </View>
+          </TouchableOpacity>
+        </View>
+      ) : null}
+
       {/* 1. Offline Storage & Sync Card */}
-      <View style={styles.card}>
+      <View style={[styles.card, subOrgName ? { marginTop: 16 } : {}]}>
         <Text style={styles.cardHeader}>Offline Attendance Sync</Text>
         <View style={styles.syncRow}>
           <View>
@@ -350,6 +385,7 @@ const styles = StyleSheet.create({
   syncRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 },
   syncTitle: { fontSize: 13, fontWeight: '800', color: '#0f172a' },
   syncSub: { fontSize: 11, color: '#64748b', marginTop: 2 },
+  syncSubStyle: { fontSize: 11, color: '#64748b', lineHeight: 16 },
   badge: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8, borderWidth: 1 },
   badgePending: { backgroundColor: '#fef2f2', borderColor: '#fecaca' },
   badgeSuccess: { backgroundColor: '#ecfdf5', borderColor: '#a7f3d0' },

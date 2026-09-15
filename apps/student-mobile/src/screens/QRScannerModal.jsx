@@ -21,7 +21,8 @@ import { Html5QrcodeScanner } from 'html5-qrcode';
 
 const { width, height } = Dimensions.get('window');
 
-export default function QRScannerModal({ visible, profile, onClose, onScanComplete }) {
+// Notice the new 'isSubOrgMode' prop
+export default function QRScannerModal({ visible, profile, onClose, onScanComplete, isSubOrgMode = false }) {
   const [permission, requestPermission] = useCameraPermissions();
   const [scanned, setScanned] = useState(false);
   const [step, setStep] = useState('SCAN'); // 'SCAN' | 'SELFIE' | 'UPLOADING'
@@ -30,7 +31,7 @@ export default function QRScannerModal({ visible, profile, onClose, onScanComple
   const [validating, setValidating] = useState(false);
   const cameraRef = useRef(null);
 
-  // Web browser webcam references for selfie capture
+  // Web browser webcam references
   const webVideoRef = useRef(null);
   const webCanvasRef = useRef(null);
   const [webMediaStream, setWebMediaStream] = useState(null);
@@ -44,7 +45,7 @@ export default function QRScannerModal({ visible, profile, onClose, onScanComple
 
   useEffect(() => {
     if (visible) {
-      initOfflineDB(); // Initialize table
+      initOfflineDB();
       setScanned(false);
       setStep('SCAN');
       setScannedData(null);
@@ -133,41 +134,84 @@ export default function QRScannerModal({ visible, profile, onClose, onScanComple
         return;
       }
 
+      // --- 🚨 STRICT CROSS-CONTAMINATION VALIDATION 🚨 ---
+      const qrType = payload.type || '';
+      const course = (profile?.course || '').toUpperCase();
+      
+      let eventsTable = 'events'; // Default Main FCO
+      let attendanceTable = 'attendance';
+      let isChapterQR = false;
+
+      if (qrType === 'PICE_EVENT_ATTENDANCE') {
+        eventsTable = 'pice_events';
+        attendanceTable = 'pice_attendance';
+        isChapterQR = true;
+      } else if (qrType === 'IIEE_EVENT_ATTENDANCE') {
+        eventsTable = 'iiee_events';
+        attendanceTable = 'iiee_attendance';
+        isChapterQR = true;
+      }
+
+      // Reject FCO scanning Chapter QR
+      if (!isSubOrgMode && isChapterQR) {
+        Alert.alert('Wrong Scanner', 'You are using the FCO scanner, but this is a Chapter event QR code. Please scan this inside your Account Settings.');
+        setScanned(false);
+        return;
+      }
+
+      // Reject Chapter scanning FCO QR
+      if (isSubOrgMode && !isChapterQR) {
+        Alert.alert('Wrong Scanner', 'You are using the Chapter scanner, but this is a Main FCO event QR code. Please use the main scanner on the Home tab.');
+        setScanned(false);
+        return;
+      }
+
+      // Reject cross-department scanning (PICE trying to scan IIEE, etc.)
+      if (qrType === 'PICE_EVENT_ATTENDANCE' && !course.includes('BSCE') && !course.includes('CIVIL')) {
+        Alert.alert('Unauthorized', 'This QR code is strictly for PICE (Civil Engineering) students.');
+        setScanned(false);
+        return;
+      }
+      
+      if (qrType === 'IIEE_EVENT_ATTENDANCE' && !course.includes('BSEE') && !course.includes('ELECTRICAL')) {
+        Alert.alert('Unauthorized', 'This QR code is strictly for IIEE (Electrical Engineering) students.');
+        setScanned(false);
+        return;
+      }
+      // --------------------------------------------------
+
       setValidating(true);
 
       let eventData = null;
       let existingAttendance = null;
 
-      // 1. TRY ONLINE LIVE CHECK FIRST
+      // 1. ONLINE LIVE CHECK WITH DYNAMIC TABLES
       try {
         const { data: liveEventData, error: evErr } = await supabase
-          .from('events')
+          .from(eventsTable)
           .select('id, title, start_time, end_time, fine_amount, attendance_access')
           .eq('id', payload.eventId)
           .single();
 
-        if (!evErr && liveEventData) {
-          eventData = liveEventData;
-        }
+        if (!evErr && liveEventData) eventData = liveEventData;
 
         const { data: liveAttendance, error: checkErr } = await supabase
-          .from('attendance')
+          .from(attendanceTable)
           .select('*')
           .eq('event_id', payload.eventId)
           .eq('student_id', profile.id)
           .maybeSingle();
 
-        if (!checkErr) {
-          existingAttendance = liveAttendance;
-        }
+        if (!checkErr) existingAttendance = liveAttendance;
       } catch (networkErr) {
-        console.log('Network unreachable, switching to offline cache lookup...');
+        console.log('Network unreachable, checking cache...');
       }
 
-      // 2. IF ONLINE FETCH FAILED, FALLBACK TO LOCAL ASYNCSTORAGE CACHE
+      // 2. OFFLINE FALLBACK (Using dynamic keys based on table)
       if (!eventData) {
         try {
-          const cachedEventsStr = await AsyncStorage.getItem(`@cached_events_${profile.id}`);
+          const cacheKey = isChapterQR ? `@cached_sub_events_${profile.id}` : `@cached_events_${profile.id}`;
+          const cachedEventsStr = await AsyncStorage.getItem(cacheKey);
           const cachedEvents = cachedEventsStr ? JSON.parse(cachedEventsStr) : [];
           eventData = cachedEvents.find(e => e.id === payload.eventId);
         } catch (e) {
@@ -175,31 +219,26 @@ export default function QRScannerModal({ visible, profile, onClose, onScanComple
         }
 
         if (!eventData) {
-          Alert.alert('Offline Error', 'Event details not found locally. Please connect to the internet at least once before the event.');
+          Alert.alert('Offline Error', 'Event details not found locally. Please connect to the internet to sync first.');
           setScanned(false);
           setValidating(false);
           return;
         }
       }
 
-      // Check local offline queue for duplicates if online check didn't catch it
-      if (!existingAttendance) {
-        try {
-          const localQueueStr = await AsyncStorage.getItem('@offline_scans');
-          const localQueue = localQueueStr ? JSON.parse(localQueueStr) : [];
-          existingAttendance = localQueue.find(item => item.eventId === payload.eventId && item.studentId === profile.id);
-        } catch (e) {
-          existingAttendance = null;
+      // 3. CHECK EXISTING ATTENDANCE
+      if (existingAttendance) {
+        // If the event allows time-out and they haven't timed out yet, we proceed. 
+        // Otherwise, block duplicate scans.
+        if (existingAttendance.time_out || !eventData.requires_time_out) {
+          Alert.alert('Already Scanned', 'You have already checked in for this event!');
+          if (onScanComplete) onScanComplete();
+          onClose();
+          return;
         }
       }
 
-      if (existingAttendance) {
-        Alert.alert('Already Scanned', 'You have already checked in for this event!');
-        if (onScanComplete) onScanComplete();
-        onClose();
-        return;
-      }
-
+      // 4. VALIDATE TIME WINDOW
       const now = new Date().getTime();
       const start = new Date(eventData.start_time).getTime();
       const end = new Date(eventData.end_time).getTime();
@@ -217,21 +256,19 @@ export default function QRScannerModal({ visible, profile, onClose, onScanComple
             ? `SESSION EXPIRED: Attendance for "${eventData.title}" is CLOSED.`
             : `SESSION NOT STARTED: Attendance for "${eventData.title}" will open at ${new Date(eventData.start_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.`
         );
-
         if (onScanComplete) onScanComplete();
         onClose();
         return;
       }
 
-      // Session is valid: proceed to verification selfie
-      setScannedData(payload);
+      // Proceed to Selfie
+      setScannedData({ ...payload, eventsTable, attendanceTable, isChapterQR });
       setFacing('front');
       setStep('SELFIE');
       
       if (Platform.OS === 'web') {
         setTimeout(async () => {
           try {
-            // Forces front camera for the selfie verification step
             const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } });
             setWebMediaStream(stream);
             if (webVideoRef.current) webVideoRef.current.srcObject = stream;
@@ -267,23 +304,16 @@ export default function QRScannerModal({ visible, profile, onClose, onScanComple
         stopWebcam();
       } else {
         if (!cameraRef.current) return;
-        const photo = await cameraRef.current.takePictureAsync({
-          base64: true,
-          quality: 0.2,
-          skipProcessing: true,
-        });
+        const photo = await cameraRef.current.takePictureAsync({ base64: true, quality: 0.2, skipProcessing: true });
         photoBase64 = `data:image/jpeg;base64,${photo.base64}`;
       }
 
-      // 1. Request GPS permission and get current location for geofencing validation
+      // Get GPS
       let currentLat = null;
       let currentLon = null;
-
       try {
         if (Platform.OS === 'web') {
-          const position = await new Promise((res, rej) => 
-            navigator.geolocation.getCurrentPosition(res, rej, { enableHighAccuracy: true })
-          );
+          const position = await new Promise((res, rej) => navigator.geolocation.getCurrentPosition(res, rej, { enableHighAccuracy: true }));
           currentLat = position.coords.latitude;
           currentLon = position.coords.longitude;
         } else {
@@ -298,14 +328,23 @@ export default function QRScannerModal({ visible, profile, onClose, onScanComple
         console.log('Location fetch warning:', locErr);
       }
       
-      // 2. ATTEMPT ONLINE UPLOAD & GEOFENCING CHECK VIA SUPABASE RPC
-      const { data: res, error: rpcErr } = await supabase.rpc('record_student_attendance', {
+      // Select the correct RPC based on if it's a chapter event or main FCO
+      const rpcName = scannedData.isChapterQR ? 'record_suborg_attendance' : 'record_student_attendance';
+      
+      const rpcParams = {
         p_event_id: scannedData.eventId,
         p_student_id: profile.id,
         p_proof_photo_url: photoBase64,
         p_latitude: currentLat,
         p_longitude: currentLon,
-      });
+      };
+
+      // Pass the specific table name to the sub-org RPC
+      if (scannedData.isChapterQR) {
+        rpcParams.p_table_name = scannedData.attendanceTable;
+      }
+
+      const { data: res, error: rpcErr } = await supabase.rpc(rpcName, rpcParams);
 
       if (rpcErr || !res?.success) {
         throw new Error(res?.message || rpcErr?.message || 'Network request failed');
@@ -323,22 +362,15 @@ export default function QRScannerModal({ visible, profile, onClose, onScanComple
       }
 
       console.log("Online upload failed, saving to offline queue...", err.message);
-
       try {
-        if (Platform.OS === 'web') {
-          throw new Error(err.message || 'Network request failed. Please check your connection.');
-        }
+        if (Platform.OS === 'web') throw new Error(err.message || 'Network request failed.');
 
         const photo = await cameraRef.current.takePictureAsync({ base64: true, quality: 0.1 });
         const fallbackBase64 = `data:image/jpeg;base64,${photo.base64}`;
 
         queueOfflineAttendance(scannedData.eventId, profile.id, fallbackBase64);
 
-        Alert.alert(
-          'Saved Offline 📴', 
-          'No internet connection detected. Your attendance proof has been saved securely on your device and will sync automatically when you reconnect.'
-        );
-
+        Alert.alert('Saved Offline 📴', 'No internet connection detected. Your attendance proof has been saved securely on your device.');
         if (onScanComplete) onScanComplete();
         onClose();
       } catch (offlineErr) {
@@ -349,22 +381,15 @@ export default function QRScannerModal({ visible, profile, onClose, onScanComple
   };
 
   return (
-    <Modal
-      visible={visible}
-      animationType="slide"
-      transparent={false}
-      statusBarTranslucent={true}
-      onRequestClose={onClose}
-    >
+    <Modal visible={visible} animationType="slide" transparent={false} statusBarTranslucent={true} onRequestClose={onClose}>
       <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
-
       <View style={styles.fullScreenContainer}>
         {Platform.OS === 'web' ? (
           <View style={styles.webContainer}>
             <View style={styles.topBar}>
               <View style={styles.headerBadge}>
                 <Text style={styles.headerTitle}>
-                  {step === 'SCAN' ? 'SCAN EVENT QR' : step === 'SELFIE' ? 'TAKE SELFIE' : 'PROCESSING'}
+                  {step === 'SCAN' ? (isSubOrgMode ? 'CHAPTER QR SCANNER' : 'MAIN FCO SCANNER') : step === 'SELFIE' ? 'TAKE SELFIE' : 'PROCESSING'}
                 </Text>
               </View>
               <TouchableOpacity onPress={() => { stopWebcam(); onClose(); }} style={styles.closeBtn}>
@@ -411,9 +436,9 @@ export default function QRScannerModal({ visible, profile, onClose, onScanComple
 
             <View style={styles.overlay} pointerEvents="box-none">
               <View style={styles.topBar}>
-                <View style={styles.headerBadge}>
-                  <Text style={styles.headerTitle}>
-                    {step === 'SCAN' ? 'SCAN EVENT QR' : step === 'SELFIE' ? 'TAKE ATTENDANCE SELFIE' : 'PROCESSING'}
+                <View style={[styles.headerBadge, isSubOrgMode && { borderColor: '#f59e0b', borderWidth: 2 }]}>
+                  <Text style={[styles.headerTitle, isSubOrgMode && { color: '#fcd34d' }]}>
+                    {step === 'SCAN' ? (isSubOrgMode ? 'CHAPTER QR SCANNER' : 'MAIN FCO SCANNER') : step === 'SELFIE' ? 'TAKE ATTENDANCE SELFIE' : 'PROCESSING'}
                   </Text>
                 </View>
                 <TouchableOpacity onPress={onClose} style={styles.closeBtn} activeOpacity={0.8}>
@@ -424,11 +449,11 @@ export default function QRScannerModal({ visible, profile, onClose, onScanComple
               {step === 'SCAN' && (
                 <View style={styles.centerTargetContainer} pointerEvents="none">
                   <View style={styles.guideBox}>
-                    <View style={[styles.corner, styles.topLeft]} />
-                    <View style={[styles.corner, styles.topRight]} />
-                    <View style={[styles.corner, styles.bottomLeft]} />
-                    <View style={[styles.corner, styles.bottomRight]} />
-                    <View style={styles.laserLine} />
+                    <View style={[styles.corner, styles.topLeft, isSubOrgMode && { borderColor: '#f59e0b' }]} />
+                    <View style={[styles.corner, styles.topRight, isSubOrgMode && { borderColor: '#f59e0b' }]} />
+                    <View style={[styles.corner, styles.bottomLeft, isSubOrgMode && { borderColor: '#f59e0b' }]} />
+                    <View style={[styles.corner, styles.bottomRight, isSubOrgMode && { borderColor: '#f59e0b' }]} />
+                    <View style={[styles.laserLine, isSubOrgMode && { backgroundColor: '#f59e0b', shadowColor: '#f59e0b' }]} />
                   </View>
                   <Text style={styles.guideText}>
                     {validating ? 'Verifying Live Access...' : 'Align Event QR Code within frame'}
@@ -463,7 +488,6 @@ export default function QRScannerModal({ visible, profile, onClose, onScanComple
 
 const styles = StyleSheet.create({
   fullScreenContainer: { flex: 1, width, height, backgroundColor: '#000000' },
-  centerContainer: { flex: 1, backgroundColor: '#000000', justifyContent: 'center', alignItems: 'center', padding: 24 },
   overlay: { ...StyleSheet.absoluteFillObject, justifyContent: 'space-between', zIndex: 10 },
   topBar: {
     position: 'absolute',

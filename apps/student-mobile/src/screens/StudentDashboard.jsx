@@ -24,10 +24,18 @@ export default function StudentDashboard({ profile: initialProfile, onSignOut })
   const [refreshing, setRefreshing] = useState(false);
   const [activeTab, setActiveTab] = useState('home');
   const [scannerVisible, setScannerVisible] = useState(false);
+  
+  // NEW: State to track which scanner mode is active
+  const [subOrgScannerActive, setSubOrgScannerActive] = useState(false);
 
   const [events, setEvents] = useState([]);
   const [attendanceRecords, setAttendanceRecords] = useState({});
   const [totalFines, setTotalFines] = useState(0.0);
+
+  // Sub-Organization States
+  const [subOrgEvents, setSubOrgEvents] = useState([]);
+  const [subOrgAttendance, setSubOrgAttendance] = useState({});
+  const [subOrgFines, setSubOrgFines] = useState(0.0);
 
   const studentUserId = initialProfile?.id || profile?.id;
 
@@ -70,7 +78,9 @@ export default function StudentDashboard({ profile: initialProfile, onSignOut })
         return;
       }
 
-      // 1. Fetch Fines first to track total unpaid balance and paid events
+      const course = (profile?.course || '').toUpperCase();
+
+      // 1. Fetch Main Fines
       const { data: finesData, error: finesErr } = await supabase
         .from('fines')
         .select('amount, status, event_id')
@@ -92,7 +102,7 @@ export default function StudentDashboard({ profile: initialProfile, onSignOut })
         await AsyncStorage.setItem(`@cached_fines_${studentUserId}`, JSON.stringify(totalUnpaidSum));
       }
 
-      // 2. Fetch all events (ignoring events marked hidden or paid off by the student)
+      // 2. Fetch Main FCO Events
       const { data: eventsData, error: eventsErr } = await supabase
         .from('events')
         .select('*')
@@ -101,15 +111,35 @@ export default function StudentDashboard({ profile: initialProfile, onSignOut })
 
       if (eventsErr) throw eventsErr;
 
-      // Filter out any events that the student has already settled/paid
       const activeEvents = (eventsData || []).filter(evt => !paidEventIds.includes(evt.id));
-
       if (activeEvents) {
         setEvents(activeEvents);
         await AsyncStorage.setItem(`@cached_events_${studentUserId}`, JSON.stringify(activeEvents));
       }
 
-      // 3. Fetch Attendance Logs
+      // 3. FETCH SUB-ORG EVENTS DYNAMICALLY BASED ON STUDENT COURSE
+      let subOrgEventsTable = 'pice_events';
+      let subOrgAttendanceTable = 'pice_attendance';
+
+      if (course.includes('BSEE') || course.includes('ELECTRICAL')) {
+        subOrgEventsTable = 'iiee_events';
+        subOrgAttendanceTable = 'iiee_attendance';
+      } else if (course.includes('BSCE') || course.includes('CIVIL')) {
+        subOrgEventsTable = 'pice_events';
+        subOrgAttendanceTable = 'pice_attendance';
+      }
+
+      const { data: subOrgEventsData, error: subOrgErr } = await supabase
+        .from(subOrgEventsTable)
+        .select('*')
+        .order('start_time', { ascending: false });
+
+      if (!subOrgErr && subOrgEventsData) {
+        setSubOrgEvents(subOrgEventsData);
+        await AsyncStorage.setItem(`@cached_sub_events_${studentUserId}`, JSON.stringify(subOrgEventsData));
+      }
+
+      // 4. FETCH MAIN FCO ATTENDANCE LOGS
       const { data: attendanceData, error: attErr } = await supabase
         .from('attendance')
         .select('event_id, time_in, time_out, status')
@@ -124,17 +154,35 @@ export default function StudentDashboard({ profile: initialProfile, onSignOut })
         await AsyncStorage.setItem(`@cached_attendance_${studentUserId}`, JSON.stringify(attendanceMap));
       }
 
-    } catch (err) {
-      console.log('No internet connection. Loading cached dashboard data...', err.message);
+      // 5. 🚀 NEW: FETCH SUB-ORG ATTENDANCE LOGS (PICE OR IIEE)
+      const { data: subAttData, error: subAttErr } = await supabase
+        .from(subOrgAttendanceTable)
+        .select('event_id, time_in, time_out, status')
+        .eq('student_id', studentUserId);
 
-      // OFFLINE FALLBACK
+      if (!subAttErr && subAttData) {
+        const subAttendanceMap = {};
+        subAttData.forEach((rec) => {
+          subAttendanceMap[rec.event_id] = rec;
+        });
+        setSubOrgAttendance(subAttendanceMap);
+        await AsyncStorage.setItem(`@cached_sub_attendance_${studentUserId}`, JSON.stringify(subAttendanceMap));
+      }
+
+    } catch (err) {
+      console.log('Offline fallback cache...', err.message);
+
       try {
         const cachedEvents = await AsyncStorage.getItem(`@cached_events_${studentUserId}`);
+        const cachedSubEvents = await AsyncStorage.getItem(`@cached_sub_events_${studentUserId}`);
         const cachedAttendance = await AsyncStorage.getItem(`@cached_attendance_${studentUserId}`);
+        const cachedSubAttendance = await AsyncStorage.getItem(`@cached_sub_attendance_${studentUserId}`);
         const cachedFines = await AsyncStorage.getItem(`@cached_fines_${studentUserId}`);
 
         if (cachedEvents) setEvents(JSON.parse(cachedEvents));
+        if (cachedSubEvents) setSubOrgEvents(JSON.parse(cachedSubEvents));
         if (cachedAttendance) setAttendanceRecords(JSON.parse(cachedAttendance));
+        if (cachedSubAttendance) setSubOrgAttendance(JSON.parse(cachedSubAttendance));
         if (cachedFines) setTotalFines(JSON.parse(cachedFines));
       } catch (cacheErr) {
         console.log('Error loading offline cache:', cacheErr);
@@ -145,6 +193,7 @@ export default function StudentDashboard({ profile: initialProfile, onSignOut })
     }
   };
 
+  
   const handleSignOut = async () => {
     try {
       await supabase.auth.signOut();
@@ -175,6 +224,9 @@ export default function StudentDashboard({ profile: initialProfile, onSignOut })
             events={events}
             attendanceRecords={attendanceRecords}
             totalFines={totalFines}
+            subOrgEvents={subOrgEvents}
+            subOrgAttendance={subOrgAttendance}
+            subOrgFines={subOrgFines}
             refreshing={refreshing}
             onRefresh={() => {
               setRefreshing(true);
@@ -189,15 +241,23 @@ export default function StudentDashboard({ profile: initialProfile, onSignOut })
             profile={profile} 
             onProfileUpdated={(updatedFields) => {
               if (updatedFields) {
-                setProfile(updatedFields); // Instantly update local state
+                setProfile(updatedFields);
               }
-              loadDashboardData(); // Refresh full data
+              loadDashboardData();
             }} 
           />
         )}
 
         {activeTab === 'settings' && (
-          <SettingsTab profile={profile} onSignOut={handleSignOut} />
+          <SettingsTab 
+            profile={profile} 
+            onSignOut={handleSignOut} 
+            // NEW: Pass the handler to trigger Chapter Mode
+            onOpenChapterScanner={() => {
+              setSubOrgScannerActive(true);
+              setScannerVisible(true);
+            }}
+          />
         )}
 
         {/* CURVED BOTTOM NAVBAR */}
@@ -251,15 +311,18 @@ export default function StudentDashboard({ profile: initialProfile, onSignOut })
               </Text>
             </TouchableOpacity>
 
-            {/* Spacer for Right Elevated QR Button */}
             <View style={styles.navItemSpacer} />
           </View>
 
-          {/* Elevated Circular QR Code Button */}
+          {/* Elevated Circular QR Code Button (Main FCO Scanner) */}
           <TouchableOpacity
             style={styles.elevatedQrButton}
             activeOpacity={0.88}
-            onPress={() => setScannerVisible(true)}
+            onPress={() => {
+              // NEW: Ensure Sub-Org mode is explicitly disabled for the main scanner
+              setSubOrgScannerActive(false); 
+              setScannerVisible(true);
+            }}
           >
             <View style={styles.qrIconInner}>
               <Ionicons name="qr-code-outline" size={28} color="#8b0000" />
@@ -272,7 +335,13 @@ export default function StudentDashboard({ profile: initialProfile, onSignOut })
         <QRScannerModal
           visible={scannerVisible}
           profile={profile}
-          onClose={() => setScannerVisible(false)}
+          // NEW: Pass the mode down to the modal
+          isSubOrgMode={subOrgScannerActive}
+          onClose={() => {
+            setScannerVisible(false);
+            // Reset state upon closing just to be safe
+            setSubOrgScannerActive(false);
+          }}
           onScanComplete={loadDashboardData}
         />
       </SafeAreaView>

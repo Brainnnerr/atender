@@ -168,7 +168,7 @@ export default function ProfileTab({ profile, onProfileUpdated }) {
           <View style={styles.detailRow}>
             <Text style={styles.detailLabel}>Year & Section</Text>
             <Text style={styles.detailValue}>
-              {profile?.year_level}th Year - Section {profile?.section}
+              {profile?.year_level}{profile?.section}
             </Text>
           </View>
         </View>
