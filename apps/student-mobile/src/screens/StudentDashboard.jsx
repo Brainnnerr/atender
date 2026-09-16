@@ -25,7 +25,7 @@ export default function StudentDashboard({ profile: initialProfile, onSignOut })
   const [activeTab, setActiveTab] = useState('home');
   const [scannerVisible, setScannerVisible] = useState(false);
   
-  // NEW: State to track which scanner mode is active
+  // State to track which scanner mode is active
   const [subOrgScannerActive, setSubOrgScannerActive] = useState(false);
 
   const [events, setEvents] = useState([]);
@@ -44,17 +44,39 @@ export default function StudentDashboard({ profile: initialProfile, onSignOut })
 
     if (!studentUserId) return;
 
-    // Real-time synchronization for fines, events, and attendance changes
+    const course = (profile?.course || '').toUpperCase();
+    let subOrgAttendanceTable = 'pice_attendance';
+    let subOrgFinesTable = 'pice_fines';
+
+    if (course.includes('BSEE') || course.includes('ELECTRICAL')) {
+      subOrgAttendanceTable = 'iiee_attendance';
+      subOrgFinesTable = 'iiee_fines';
+    } else if (course.includes('BSCE') || course.includes('CIVIL')) {
+      subOrgAttendanceTable = 'pice_attendance';
+      subOrgFinesTable = 'pice_fines';
+    }
+
+    // Broadened real-time listener without strict row-level filters to guarantee event delivery
     const channel = supabase
-      .channel(`student_realtime_${studentUserId}`)
+      .channel(`student_realtime_sync_${studentUserId}`)
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'fines', filter: `student_id=eq.${studentUserId}` },
+        { event: '*', schema: 'public', table: 'fines' },
         () => loadDashboardData()
       )
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'attendance', filter: `student_id=eq.${studentUserId}` },
+        { event: '*', schema: 'public', table: subOrgFinesTable },
+        () => loadDashboardData()
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'attendance' },
+        () => loadDashboardData()
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: subOrgAttendanceTable },
         () => loadDashboardData()
       )
       .on(
@@ -62,12 +84,22 @@ export default function StudentDashboard({ profile: initialProfile, onSignOut })
         { event: '*', schema: 'public', table: 'events' },
         () => loadDashboardData()
       )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'iiee_events' },
+        () => loadDashboardData()
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'pice_events' },
+        () => loadDashboardData()
+      )
       .subscribe();
 
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [studentUserId]);
+  }, [studentUserId, profile?.course]);
 
   const loadDashboardData = async () => {
     try {
@@ -80,7 +112,22 @@ export default function StudentDashboard({ profile: initialProfile, onSignOut })
 
       const course = (profile?.course || '').toUpperCase();
 
-      // 1. Fetch Main Fines
+      // 1. DETERMINE SUB-ORG TABLES BASED ON STUDENT COURSE
+      let subOrgEventsTable = 'pice_events';
+      let subOrgAttendanceTable = 'pice_attendance';
+      let subOrgFinesTable = 'pice_fines';
+
+      if (course.includes('BSEE') || course.includes('ELECTRICAL')) {
+        subOrgEventsTable = 'iiee_events';
+        subOrgAttendanceTable = 'iiee_attendance';
+        subOrgFinesTable = 'iiee_fines';
+      } else if (course.includes('BSCE') || course.includes('CIVIL')) {
+        subOrgEventsTable = 'pice_events';
+        subOrgAttendanceTable = 'pice_attendance';
+        subOrgFinesTable = 'pice_fines';
+      }
+
+      // 2. FETCH MAIN FCO FINES
       const { data: finesData, error: finesErr } = await supabase
         .from('fines')
         .select('amount, status, event_id')
@@ -101,45 +148,74 @@ export default function StudentDashboard({ profile: initialProfile, onSignOut })
         setTotalFines(totalUnpaidSum);
         await AsyncStorage.setItem(`@cached_fines_${studentUserId}`, JSON.stringify(totalUnpaidSum));
       }
+      
+      // 3. FETCH SUB-ORG FINES & TRACK WHICH SPECIFIC EVENTS ARE PAID BY THIS STUDENT
+      let subOrgUnpaidSum = 0;
+      let subOrgPaidEventIds = [];
 
-      // 2. Fetch Main FCO Events
+      if (subOrgFinesTable && (course.includes('BSCE') || course.includes('BSEE') || course.includes('CIVIL') || course.includes('ELECTRICAL'))) {
+        const { data: subFinesData, error: subFinesErr } = await supabase
+          .from(subOrgFinesTable)
+          .select('amount, status, event_id')
+          .eq('student_id', studentUserId);
+
+        if (!subFinesErr && subFinesData) {
+          subFinesData.forEach((f) => {
+            const fStatus = String(f.status || '').toLowerCase();
+            
+            // 🚀 STRICT CHECK: Only hide if status is strictly 'paid' AND event_id exists
+            if (fStatus === 'paid' && f.event_id) {
+              subOrgPaidEventIds.push(f.event_id);
+            }
+            if (['unpaid', 'pending_approval'].includes(fStatus)) {
+              subOrgUnpaidSum += parseFloat(f.amount) || 0;
+            }
+          });
+        }
+      }
+
+      setSubOrgFines(subOrgUnpaidSum);
+      await AsyncStorage.setItem(`@cached_sub_fines_${studentUserId}`, JSON.stringify(subOrgUnpaidSum));
+
+      // 4. FETCH MAIN FCO EVENTS (Hide if paid OR if student already successfully attended)
       const { data: eventsData, error: eventsErr } = await supabase
         .from('events')
-        .select('*')
-        .eq('hidden_from_student', false)
+        .select('id, title, location, start_time, end_time, fine_amount, semester')
         .order('start_time', { ascending: false });
 
       if (eventsErr) throw eventsErr;
 
-      const activeEvents = (eventsData || []).filter(evt => !paidEventIds.includes(evt.id));
+      // Filter out events that are paid OR already attended
+      const activeEvents = (eventsData || []).filter(evt => {
+        const isPaid = paidEventIds.includes(evt.id);
+        const hasAttended = !!(attendanceRecords[evt.id]?.time_in || attendanceRecords[evt.id]?.status === 'present');
+        return !isPaid && !hasAttended; // <--- Hides event once attended or paid!
+      });
+
       if (activeEvents) {
         setEvents(activeEvents);
         await AsyncStorage.setItem(`@cached_events_${studentUserId}`, JSON.stringify(activeEvents));
       }
 
-      // 3. FETCH SUB-ORG EVENTS DYNAMICALLY BASED ON STUDENT COURSE
-      let subOrgEventsTable = 'pice_events';
-      let subOrgAttendanceTable = 'pice_attendance';
-
-      if (course.includes('BSEE') || course.includes('ELECTRICAL')) {
-        subOrgEventsTable = 'iiee_events';
-        subOrgAttendanceTable = 'iiee_attendance';
-      } else if (course.includes('BSCE') || course.includes('CIVIL')) {
-        subOrgEventsTable = 'pice_events';
-        subOrgAttendanceTable = 'pice_attendance';
-      }
-
+      // 5. FETCH SUB-ORG EVENTS (Hide if paid OR if student already successfully attended)
       const { data: subOrgEventsData, error: subOrgErr } = await supabase
         .from(subOrgEventsTable)
         .select('*')
+        .eq('hidden_from_student', false)
         .order('start_time', { ascending: false });
 
       if (!subOrgErr && subOrgEventsData) {
-        setSubOrgEvents(subOrgEventsData);
-        await AsyncStorage.setItem(`@cached_sub_events_${studentUserId}`, JSON.stringify(subOrgEventsData));
+        const activeSubEvents = subOrgEventsData.filter(evt => {
+          const isPaid = subOrgPaidEventIds.includes(evt.id);
+          const hasAttended = !!(subOrgAttendance[evt.id]?.time_in || subOrgAttendance[evt.id]?.status === 'present');
+          return !isPaid && !hasAttended; // <--- Hides sub-org event once attended or paid!
+        });
+
+        setSubOrgEvents(activeSubEvents);
+        await AsyncStorage.setItem(`@cached_sub_events_${studentUserId}`, JSON.stringify(activeSubEvents));
       }
 
-      // 4. FETCH MAIN FCO ATTENDANCE LOGS
+      // 6. FETCH MAIN FCO ATTENDANCE LOGS
       const { data: attendanceData, error: attErr } = await supabase
         .from('attendance')
         .select('event_id, time_in, time_out, status')
@@ -154,7 +230,7 @@ export default function StudentDashboard({ profile: initialProfile, onSignOut })
         await AsyncStorage.setItem(`@cached_attendance_${studentUserId}`, JSON.stringify(attendanceMap));
       }
 
-      // 5. 🚀 NEW: FETCH SUB-ORG ATTENDANCE LOGS (PICE OR IIEE)
+      // 7. FETCH SUB-ORG ATTENDANCE LOGS
       const { data: subAttData, error: subAttErr } = await supabase
         .from(subOrgAttendanceTable)
         .select('event_id, time_in, time_out, status')
@@ -178,12 +254,14 @@ export default function StudentDashboard({ profile: initialProfile, onSignOut })
         const cachedAttendance = await AsyncStorage.getItem(`@cached_attendance_${studentUserId}`);
         const cachedSubAttendance = await AsyncStorage.getItem(`@cached_sub_attendance_${studentUserId}`);
         const cachedFines = await AsyncStorage.getItem(`@cached_fines_${studentUserId}`);
+        const cachedSubFines = await AsyncStorage.getItem(`@cached_sub_fines_${studentUserId}`);
 
         if (cachedEvents) setEvents(JSON.parse(cachedEvents));
         if (cachedSubEvents) setSubOrgEvents(JSON.parse(cachedSubEvents));
         if (cachedAttendance) setAttendanceRecords(JSON.parse(cachedAttendance));
         if (cachedSubAttendance) setSubOrgAttendance(JSON.parse(cachedSubAttendance));
         if (cachedFines) setTotalFines(JSON.parse(cachedFines));
+        if (cachedSubFines) setSubOrgFines(JSON.parse(cachedSubFines));
       } catch (cacheErr) {
         console.log('Error loading offline cache:', cacheErr);
       }
@@ -192,7 +270,6 @@ export default function StudentDashboard({ profile: initialProfile, onSignOut })
       setRefreshing(false);
     }
   };
-
   
   const handleSignOut = async () => {
     try {
@@ -252,7 +329,6 @@ export default function StudentDashboard({ profile: initialProfile, onSignOut })
           <SettingsTab 
             profile={profile} 
             onSignOut={handleSignOut} 
-            // NEW: Pass the handler to trigger Chapter Mode
             onOpenChapterScanner={() => {
               setSubOrgScannerActive(true);
               setScannerVisible(true);
@@ -319,7 +395,6 @@ export default function StudentDashboard({ profile: initialProfile, onSignOut })
             style={styles.elevatedQrButton}
             activeOpacity={0.88}
             onPress={() => {
-              // NEW: Ensure Sub-Org mode is explicitly disabled for the main scanner
               setSubOrgScannerActive(false); 
               setScannerVisible(true);
             }}
@@ -335,11 +410,9 @@ export default function StudentDashboard({ profile: initialProfile, onSignOut })
         <QRScannerModal
           visible={scannerVisible}
           profile={profile}
-          // NEW: Pass the mode down to the modal
           isSubOrgMode={subOrgScannerActive}
           onClose={() => {
             setScannerVisible(false);
-            // Reset state upon closing just to be safe
             setSubOrgScannerActive(false);
           }}
           onScanComplete={loadDashboardData}

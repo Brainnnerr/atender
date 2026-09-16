@@ -28,20 +28,25 @@ export default function HomeTab({
   let subOrgName = '';
   let subOrgCode = '';
   let subOrgColor = '#b45309'; // Default bronze for PICE
-  let subOrgBadgeBg = '#fef3c7';
+  let subOrgCardBg = '#ffffff';
+  let subOrgBadgeBg = 'rgba(180, 83, 9, 0.15)';
+  let subOrgBorderColor = '#e2e8f0';
 
   if (course.includes('BSCE') || course.includes('CIVIL')) {
     subOrgName = 'Philippine Institute of Civil Engineers';
     subOrgCode = 'PICE FINES';
-    subOrgColor = '#b45309'; // PICE bronze
-    subOrgBadgeBg = '#fef3c7';
+    subOrgColor = '#b45309';
+    subOrgCardBg = '#ffffff';
+    subOrgBadgeBg = 'rgba(180, 83, 9, 0.15)';
+    subOrgBorderColor = '#e2e8f0';
   } else if (course.includes('BSEE') || course.includes('ELECTRICAL')) {
     subOrgName = 'Institute of Integrated Electrical Engineers';
     subOrgCode = 'IIEE FINES';
-    subOrgColor = '#854d0e'; // Dark amber text for contrast
-    subOrgBadgeBg = '#fef08a'; // Pastel Yellow IIEE theme!
+    subOrgColor = '#854d0e';
+    subOrgCardBg = '#ffffff'; // Uniform clean white theme matching PICE and FCO
+    subOrgBorderColor = '#e2e8f0';
+    subOrgBadgeBg = 'rgba(133, 77, 14, 0.15)';
   } else if (course.includes('BSCpE') || course.includes('COMPUTER')) {
-    // BSCpE does not have a sub-org chapter ledger in this framework
     subOrgName = '';
     subOrgCode = '';
   }
@@ -96,19 +101,19 @@ export default function HomeTab({
         </Text>
       </View>
 
-      {/* 2. Department Sub-Organization Fines Card (Rendered ONLY if subOrgCode exists, e.g., PICE or IIEE) */}
+      {/* 2. Department Sub-Organization Fines Card (Fully Matched to FCO Layout) */}
       {subOrgCode ? (
-        <View style={[styles.whiteFineCard, course.includes('BSEE') && { backgroundColor: '#fefde8', borderColor: '#fde047' }]}>
+        <View style={[styles.fineCard, { backgroundColor: subOrgCardBg, borderColor: subOrgBorderColor, borderWidth: 1.5 }]}>
           <View style={styles.fineHeader}>
-            <Text style={[styles.whiteFineCardTitle, { color: subOrgColor }]}>{subOrgCode}</Text>
-            <View style={[styles.whiteFineStatusTag, { backgroundColor: subOrgBadgeBg, borderColor: subOrgColor }]}>
-              <Text style={[styles.whiteFineStatusText, { color: subOrgColor }]}>
+            <Text style={[styles.fineCardTitle, { color: subOrgColor }]}>{subOrgCode}</Text>
+            <View style={[styles.fineStatusTag, { backgroundColor: subOrgBadgeBg }]}>
+              <Text style={[styles.fineStatusText, { color: subOrgColor }]}>
                 {subOrgFines > 0 ? 'ACTION NEEDED' : 'CLEARED'}
               </Text>
             </View>
           </View>
-          <Text style={styles.whiteFineAmount}>₱{subOrgFines.toFixed(2)}</Text>
-          <Text style={styles.whiteFineDescription}>
+          <Text style={[styles.fineAmount, { color: '#0f172a' }]}>₱{subOrgFines.toFixed(2)}</Text>
+          <Text style={[styles.fineDescription, { color: '#64748b' }]}>
             {subOrgFines > 0
               ? `Accumulated penalty for unexcused ${subOrgCode.split(' ')[0]} event absences.`
               : `You have no outstanding ${subOrgCode.split(' ')[0]} fines. Keep it up!`}
@@ -116,7 +121,7 @@ export default function HomeTab({
         </View>
       ) : null}
 
-      {/* 3. FCO & Sub-Org Interactive Tab Switcher (Rendered ONLY if subOrgCode exists) */}
+      {/* 3. FCO & Sub-Org Interactive Tab Switcher */}
       {subOrgCode ? (
         <View style={styles.tabContainer}>
           <TouchableOpacity
@@ -141,7 +146,7 @@ export default function HomeTab({
         </View>
       ) : null}
 
-      {/* 4. Tab Content: Main FCO Tab (Always shown; default view for BSCpE and others) */}
+      {/* 4. Tab Content: Main FCO Tab */}
       {(activeTab === 'fco' || !subOrgCode) && (
         <>
           {events.length === 0 ? (
@@ -156,7 +161,7 @@ export default function HomeTab({
               const recordedTime = att?.time_in || att?.time_out;
 
               return (
-                <View key={evt.id} style={styles.eventCard}>
+                <View key={evt.id} style={styles.eventCardItem}>
                   <View style={styles.eventHeaderRow}>
                     <Text style={styles.eventTitle}>{evt.title}</Text>
                     <View style={styles.penaltyBadge}>
@@ -181,6 +186,11 @@ export default function HomeTab({
                     </Text>
                   </View>
 
+                  <View style={styles.metaRow}>
+                    <Ionicons name="school-outline" size={13} color="#94a3b8" />
+                    <Text style={styles.eventSemester}> {evt.semester || '1st Semester'}</Text>
+                  </View>
+
                   <View style={styles.statusBoxContainer}>
                     <View style={[styles.statusBox, hasRecord ? styles.statusBoxSuccess : styles.statusBoxPending]}>
                       <View style={styles.statusHeaderRow}>
@@ -203,7 +213,7 @@ export default function HomeTab({
         </>
       )}
 
-      {/* 5. Tab Content: Sub-Org Tab (Rendered ONLY if subOrgCode exists and suborg tab is active) */}
+      {/* 5. Tab Content: Sub-Org Tab */}
       {subOrgCode && activeTab === 'suborg' && (
         <>
           {studentFilteredSubEvents.length === 0 ? (
@@ -218,7 +228,7 @@ export default function HomeTab({
               const recordedTime = log?.time_in || log?.time_out;
 
               return (
-                <View key={evt.id} style={[styles.eventCard, { borderLeftWidth: 4, borderLeftColor: subOrgColor }]}>
+                <View key={evt.id} style={styles.eventCardItem}>
                   <View style={styles.eventHeaderRow}>
                     <Text style={styles.eventTitle}>{evt.title}</Text>
                     <View style={[styles.penaltyBadge, { backgroundColor: subOrgBadgeBg, borderColor: subOrgColor }]}>
@@ -241,6 +251,11 @@ export default function HomeTab({
                       {new Date(evt.start_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} -{' '}
                       {new Date(evt.end_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                     </Text>
+                  </View>
+
+                  <View style={styles.metaRow}>
+                    <Ionicons name="school-outline" size={13} color="#94a3b8" />
+                    <Text style={styles.eventSemester}> {evt.semester || '1st Semester'}</Text>
                   </View>
 
                   <View style={styles.statusBoxContainer}>
@@ -285,13 +300,6 @@ const styles = StyleSheet.create({
   fineAmount: { color: '#ffffff', fontSize: 34, fontWeight: '900', marginTop: 8 },
   fineDescription: { color: '#fee2e2', fontSize: 12, fontWeight: '500', marginTop: 4, lineHeight: 16 },
 
-  whiteFineCard: { backgroundColor: '#ffffff', borderRadius: 20, padding: 20, marginBottom: 20, borderWidth: 1.5, borderColor: '#e2e8f0', elevation: 3 },
-  whiteFineCardTitle: { fontSize: 11, fontWeight: '800', textTransform: 'uppercase', letterSpacing: 1 },
-  whiteFineStatusTag: { paddingHorizontal: 10, paddingVertical: 3, borderRadius: 8, borderWidth: 1 },
-  whiteFineStatusText: { fontSize: 10, fontWeight: '900', textTransform: 'uppercase' },
-  whiteFineAmount: { color: '#0f172a', fontSize: 34, fontWeight: '900', marginTop: 8 },
-  whiteFineDescription: { color: '#64748b', fontSize: 12, fontWeight: '500', marginTop: 4, lineHeight: 16 },
-
   tabContainer: { flexDirection: 'row', backgroundColor: '#e2e8f0', borderRadius: 14, padding: 4, marginBottom: 20 },
   tabButton: { flex: 1, paddingVertical: 12, alignItems: 'center', borderRadius: 10 },
   tabButtonActive: { backgroundColor: '#ffffff', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.1, shadowRadius: 2, elevation: 2 },
@@ -300,7 +308,7 @@ const styles = StyleSheet.create({
 
   emptyContainer: { backgroundColor: '#ffffff', padding: 36, borderRadius: 16, alignItems: 'center', borderWidth: 1.5, borderColor: '#e2e8f0' },
   emptyText: { color: '#94a3b8', fontSize: 13, fontWeight: '600', marginTop: 8 },
-  eventCard: { backgroundColor: '#ffffff', borderRadius: 18, padding: 18, marginBottom: 14, borderWidth: 1.5, borderColor: '#e2e8f0', elevation: 2 },
+  eventCardItem: { backgroundColor: '#ffffff', borderRadius: 18, padding: 18, marginBottom: 14, borderWidth: 1.5, borderColor: '#e2e8f0', elevation: 2 },
   eventHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 6 },
   eventTitle: { fontSize: 15, fontWeight: '800', color: '#0f172a', flex: 1, paddingRight: 8 },
   penaltyBadge: { backgroundColor: '#fef2f2', borderWidth: 1, borderColor: '#fecaca', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8 },
@@ -308,6 +316,7 @@ const styles = StyleSheet.create({
   metaRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 3 },
   eventLocation: { color: '#64748b', fontSize: 12, fontWeight: '600' , flex: 1 },
   eventTime: { color: '#94a3b8', fontSize: 11, fontWeight: '500' },
+  eventSemester: { color: '#64748b', fontSize: 11, fontWeight: '600' },
   statusBoxContainer: { marginTop: 14, paddingTop: 12, borderTopWidth: 1, borderColor: '#f1f5f9' },
   statusBox: { width: '100%', paddingVertical: 12, paddingHorizontal: 14, borderRadius: 12, borderWidth: 1.5 },
   statusBoxSuccess: { backgroundColor: '#ecfdf5', borderColor: '#a7f3d0' },
