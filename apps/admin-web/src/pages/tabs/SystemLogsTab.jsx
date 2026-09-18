@@ -4,12 +4,17 @@ import { supabase } from '../../lib/supabaseClient';
 export default function SystemLogsTab() {
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [moduleFilter, setModuleFilter] = useState('ALL');
   const [selectedLog, setSelectedLog] = useState(null);
 
+  const [page, setPage] = useState(0);
+  const pageSize = 50; // Load 50 logs per batch
+
   useEffect(() => {
-    fetchLogs();
+    fetchLogs(0, true);
 
     // Real-time listener for incoming actions
     const channel = supabase
@@ -24,24 +29,50 @@ export default function SystemLogsTab() {
     };
   }, []);
 
-  const fetchLogs = async () => {
+  const fetchLogs = async (pageNumber = 0, isInitial = false) => {
     try {
-      setLoading(true);
+      if (isInitial) setLoading(true);
+      else setLoadingMore(true);
+
+      const from = pageNumber * pageSize;
+      const to = from + pageSize - 1;
+
       const { data, error } = await supabase
         .from('audit_logs')
         .select('*')
         .order('created_at', { ascending: false })
-        .limit(250);
+        .range(from, to);
 
       if (error) throw error;
-      setLogs(data || []);
-      if (data && data.length > 0) {
-        setSelectedLog(data[0]);
+
+      const fetchedData = data || [];
+      
+      // If we received fewer items than the page size, there are no more logs to load
+      if (fetchedData.length < pageSize) {
+        setHasMore(false);
       }
+
+      if (isInitial) {
+        setLogs(fetchedData);
+        if (fetchedData.length > 0) {
+          setSelectedLog(fetchedData[0]);
+        }
+      } else {
+        setLogs((prev) => [...prev, ...fetchedData]);
+      }
+
+      setPage(pageNumber);
     } catch (err) {
       console.error('Error fetching system logs:', err);
     } finally {
       setLoading(false);
+      setLoadingMore(false);
+    }
+  };
+
+  const handleLoadMore = () => {
+    if (!loadingMore && hasMore) {
+      fetchLogs(page + 1, false);
     }
   };
 
@@ -86,7 +117,7 @@ export default function SystemLogsTab() {
         </div>
 
         <button
-          onClick={fetchLogs}
+          onClick={() => { setPage(0); setHasMore(true); fetchLogs(0, true); }}
           className="px-4 py-2.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700 rounded-xl text-xs font-black uppercase tracking-wider transition cursor-pointer flex items-center gap-1.5"
         >
           ↻ Refresh Logs
@@ -133,10 +164,10 @@ export default function SystemLogsTab() {
       {/* 3. TWO-PANE LOG VIEWER */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         {/* LEFT PANE: ACTION STREAM */}
-        <div className="lg:col-span-7 bg-white rounded-2xl border border-slate-200/80 shadow-sm overflow-hidden">
+        <div className="lg:col-span-7 bg-white rounded-2xl border border-slate-200/80 shadow-sm overflow-hidden flex flex-col">
           <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
             <span className="text-xs font-black text-slate-800 uppercase tracking-wider">
-              Recorded Events ({filteredLogs.length})
+              Loaded Records ({filteredLogs.length})
             </span>
             <span className="text-[11px] font-bold text-slate-400">Click a record to inspect payload</span>
           </div>
@@ -150,7 +181,7 @@ export default function SystemLogsTab() {
               No audit logs matching this filter.
             </div>
           ) : (
-            <div className="divide-y divide-slate-100 max-h-[640px] overflow-y-auto">
+            <div className="divide-y divide-slate-100 max-h-[560px] overflow-y-auto">
               {filteredLogs.map((log) => {
                 const isSelected = selectedLog?.id === log.id;
 
@@ -189,6 +220,19 @@ export default function SystemLogsTab() {
                   </button>
                 );
               })}
+
+              {/* Load More Button */}
+              {hasMore && (
+                <div className="p-4 bg-slate-50/50 text-center border-t border-slate-100">
+                  <button
+                    onClick={handleLoadMore}
+                    disabled={loadingMore}
+                    className="px-5 py-2 bg-white hover:bg-slate-100 border border-slate-200 text-slate-700 rounded-xl text-xs font-bold uppercase tracking-wider transition cursor-pointer shadow-sm"
+                  >
+                    {loadingMore ? 'Loading more logs...' : 'Load Older Logs'}
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -260,4 +304,4 @@ export default function SystemLogsTab() {
       </div>
     </div>
   );
-}
+              }
