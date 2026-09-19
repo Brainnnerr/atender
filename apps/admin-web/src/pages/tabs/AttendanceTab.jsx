@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { supabase } from '../../lib/supabaseClient';
 import { logAdminAction } from '../../lib/auditLogger';
 
@@ -93,74 +93,46 @@ export default function AttendanceTab({ currentUser }) {
     }
   };
 
+  // 🚀 OPTIMIZED: Single database query joining attendance, profiles, and events
   const fetchAttendanceData = async () => {
     try {
       setLoading(true);
 
-      // 1. Fetch raw attendance records
-      let attQuery = supabase
+      let query = supabase
         .from('attendance')
-        .select('*')
+        .select(`
+          *,
+          profiles:student_id (
+            id,
+            full_name,
+            student_id,
+            course,
+            year_level,
+            section,
+            avatar_url
+          ),
+          events:event_id (
+            id,
+            title,
+            fine_amount
+          )
+        `)
         .order('time_in', { ascending: false });
 
       if (selectedEventId && selectedEventId !== 'ALL') {
-        attQuery = attQuery.eq('event_id', selectedEventId);
+        query = query.eq('event_id', selectedEventId);
       }
 
-      const { data: rawAttendance, error: attError } = await attQuery;
-      if (attError) throw attError;
+      const { data, error } = await query;
+      if (error) throw error;
 
-      if (!rawAttendance || rawAttendance.length === 0) {
-        setAttendanceLogs([]);
-        setSelectedLog(null);
-        return;
-      }
+      const logs = data || [];
+      setAttendanceLogs(logs);
 
-      // 2. Fetch linked Student Profiles
-      const studentIds = [...new Set(rawAttendance.map((a) => a.student_id).filter(Boolean))];
-      const { data: profilesData, error: profError } = await supabase
-        .from('profiles')
-        .select('*')
-        .in('id', studentIds);
-
-      if (profError) throw profError;
-
-      // 3. Fetch linked Events
-      const eventIds = [...new Set(rawAttendance.map((a) => a.event_id).filter(Boolean))];
-      const { data: eventsData, error: evError } = await supabase
-        .from('events')
-        .select('*')
-        .in('id', eventIds);
-
-      if (evError) throw evError;
-
-      // 4. Merge into unified logs
-      const profileMap = {};
-      (profilesData || []).forEach((p) => {
-        profileMap[p.id] = p;
-      });
-
-      const eventMap = {};
-      (eventsData || []).forEach((e) => {
-        eventMap[e.id] = e;
-      });
-
-      const mergedLogs = rawAttendance.map((item) => ({
-        ...item,
-        profiles: profileMap[item.student_id] || {
-          full_name: 'Unknown Student',
-          student_id: 'N/A',
-          course: 'COE',
-        },
-        events: eventMap[item.event_id] || null,
-      }));
-
-      setAttendanceLogs(mergedLogs);
-
-      if (mergedLogs.length > 0) {
+      if (logs.length > 0) {
         setSelectedLog((prev) => {
-          if (!prev) return mergedLogs[0];
-          return mergedLogs.find((l) => l.id === prev.id) || mergedLogs[0];
+          if (!prev) return logs[0];
+          return logs.find((l) => l.id === prev.id) || logs[0];
         });
       } else {
         setSelectedLog(null);
@@ -173,7 +145,7 @@ export default function AttendanceTab({ currentUser }) {
   };
 
   // Handle manual attendance submission via RPC
-const handleManualAttendanceSubmit = async (e) => {
+  const handleManualAttendanceSubmit = async (e) => {
     e.preventDefault();
     if (!manualEventId || !manualStudentId) {
       showToast('Please select both an event and a student.', 'error');
@@ -189,11 +161,9 @@ const handleManualAttendanceSubmit = async (e) => {
 
       if (error) throw error;
 
-      // Find student and event names for the audit log metadata
       const targetStudent = students.find((s) => s.id === manualStudentId);
       const targetEvent = events.find((ev) => ev.id === manualEventId);
 
-      // Record system audit log for manual attendance assignment
       await logAdminAction({
         currentUser,
         actionType: 'MANUAL_ATTENDANCE_OVERRIDE',
@@ -280,7 +250,6 @@ const handleManualAttendanceSubmit = async (e) => {
     return matchesSearch && matchesProgram && matchesYear;
   });
 
-  // Filter student list inside the manual attendance modal search bar
   const filteredModalStudents = students.filter((stu) => {
     const name = (stu.full_name || '').toLowerCase();
     const sId = (stu.student_id || '').toLowerCase();
@@ -306,7 +275,7 @@ const handleManualAttendanceSubmit = async (e) => {
         </div>
       )}
 
-      {/* 1. TOP BAR WITH MANUAL ATTENDANCE BUTTON MOVED TO THE RIGHT CORNER */}
+      {/* 1. TOP BAR WITH MANUAL ATTENDANCE BUTTON */}
       <div className="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-sm flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
           <h2 className="text-xl font-black text-slate-800 tracking-tight">Attendance Audit & Verification</h2>
@@ -316,7 +285,6 @@ const handleManualAttendanceSubmit = async (e) => {
         </div>
 
         <div className="flex flex-wrap items-center gap-3 w-full md:w-auto justify-end">
-          {/* Event Selector Dropdown */}
           <div className="flex items-center gap-2">
             <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Event:</span>
             <select
@@ -333,7 +301,6 @@ const handleManualAttendanceSubmit = async (e) => {
             </select>
           </div>
 
-          {/* Manual Attendance Button (Top-Right Corner) */}
           <button
             onClick={() => setManualModalOpen(true)}
             className="px-4 py-2.5 bg-[#8b0000] hover:bg-[#700000] text-white font-bold text-xs uppercase tracking-wider rounded-xl transition shadow-md shadow-[#8b0000]/20 flex items-center gap-2 cursor-pointer whitespace-nowrap"
@@ -475,7 +442,6 @@ const handleManualAttendanceSubmit = async (e) => {
             </div>
           ) : (
             <div className="space-y-5">
-              {/* Profile Card Summary */}
               <div className="flex items-center gap-3 p-3.5 rounded-xl bg-slate-50 border border-slate-100">
                 <div className="w-12 h-12 rounded-full bg-slate-200 overflow-hidden flex-shrink-0 flex items-center justify-center">
                   {selectedLog.profiles?.avatar_url ? (
@@ -499,7 +465,6 @@ const handleManualAttendanceSubmit = async (e) => {
                 </div>
               </div>
 
-              {/* Attendance Proof Photo Preview */}
               <div>
                 <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2">
                   📷 Selfie Attendance Proof
@@ -522,11 +487,9 @@ const handleManualAttendanceSubmit = async (e) => {
                 </div>
               </div>
 
-              {/* Academic & Timestamps Audit */}
               <div className="grid grid-cols-2 gap-3 text-xs">
                 <div className="p-3 bg-slate-50 rounded-xl border border-slate-100">
-                  <p className="text-[10px] font-bold text-slate-400 uppercase">Program</p>
-                  <p className="font-black text-slate-800 mt-0.5">{selectedLog.profiles?.course || 'COE'}</p>
+                   <p className="font-black text-slate-800 mt-0.5">{selectedLog.profiles?.course || 'COE'}</p>
                 </div>
 
                 <div className="p-3 bg-slate-50 rounded-xl border border-slate-100">
@@ -548,7 +511,6 @@ const handleManualAttendanceSubmit = async (e) => {
                 </div>
               </div>
 
-              {/* Invalidate / Reject Attendance Button */}
               <div className="pt-2 border-t border-slate-100">
                 <button
                   onClick={() => handleDeleteAttendance(selectedLog)}
@@ -569,7 +531,7 @@ const handleManualAttendanceSubmit = async (e) => {
         </div>
       </div>
 
-      {/* MANUAL ATTENDANCE ASSIGNMENT MODAL WITH SEARCH BAR */}
+      {/* MANUAL ATTENDANCE ASSIGNMENT MODAL */}
       {manualModalOpen && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-100">
@@ -605,7 +567,6 @@ const handleManualAttendanceSubmit = async (e) => {
 
               <div>
                 <label className="block mb-1.5">Search & Select Student</label>
-                {/* Search Bar inside the Modal */}
                 <input
                   type="text"
                   placeholder="Type student name or ID..."
@@ -631,7 +592,7 @@ const handleManualAttendanceSubmit = async (e) => {
               </div>
 
               <div className="p-3 bg-amber-50 rounded-xl border border-amber-200 text-amber-800 font-normal text-[11px] leading-relaxed">
-                ℹ️ Recording attendance here will mark the student as **Present** for the chosen event (such as Soakfest) and automatically waive any associated fines.
+                ℹ️ Recording attendance here will mark the student as **Present** for the chosen event and automatically waive any associated fines.
               </div>
 
               <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
@@ -656,4 +617,4 @@ const handleManualAttendanceSubmit = async (e) => {
       )}
     </div>
   );
-}
+}  
