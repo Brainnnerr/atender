@@ -95,70 +95,56 @@ export default function AttendanceTab({ currentUser }) {
     }
   };
 
-  const fetchAttendanceData = async () => {
+ const fetchAttendanceData = async () => {
     try {
       setLoading(true);
 
+      // Fetch IIEE attendance, profiles, and events in ONE optimized database query
       let attQuery = supabase
         .from('iiee_attendance')
-        .select('*')
-        .order('time_in', { ascending: false });
+        .select(`
+          id,
+          time_in,
+          time_out,
+          created_at,
+          proof_photo_url,
+          profiles (
+            id,
+            full_name,
+            student_id,
+            course,
+            year_level,
+            section,
+            avatar_url
+          ),
+          iiee_events (
+            id,
+            title,
+            fine_amount
+          )
+        `)
+        .order('time_in', { ascending: false })
+        .limit(500); // Safety limit to prevent crashing on "ALL" events
 
       if (selectedEventId && selectedEventId !== 'ALL') {
         attQuery = attQuery.eq('event_id', selectedEventId);
       }
 
-      const { data: rawAttendance, error: attError } = await attQuery;
-      if (attError) throw attError;
+      const { data, error } = await attQuery;
+      if (error) throw error;
 
-      if (!rawAttendance || rawAttendance.length === 0) {
-        setAttendanceLogs([]);
-        setSelectedLog(null);
-        return;
-      }
-
-      const studentIds = [...new Set(rawAttendance.map((a) => a.student_id).filter(Boolean))];
-      const { data: profilesData, error: profError } = await supabase
-        .from('profiles')
-        .select('*')
-        .in('id', studentIds);
-
-      if (profError) throw profError;
-
-      const eventIds = [...new Set(rawAttendance.map((a) => a.event_id).filter(Boolean))];
-      const { data: eventsData, error: evError } = await supabase
-        .from('iiee_events')
-        .select('*')
-        .in('id', eventIds);
-
-      if (evError) throw evError;
-
-      const profileMap = {};
-      (profilesData || []).forEach((p) => {
-        profileMap[p.id] = p;
-      });
-
-      const eventMap = {};
-      (eventsData || []).forEach((e) => {
-        eventMap[e.id] = e;
-      });
-
-      const mergedLogs = rawAttendance.map((item) => ({
+      // Map 'iiee_events' to 'events' so your UI components don't break
+      const formattedData = (data || []).map(item => ({
         ...item,
-        profiles: profileMap[item.student_id] || {
-          full_name: 'Unknown Student',
-          student_id: 'N/A',
-          course: 'BSEE',
-        },
-        events: eventMap[item.event_id] || null,
+        events: item.iiee_events
       }));
 
-      setAttendanceLogs(mergedLogs);
+      setAttendanceLogs(formattedData);
 
-      if (mergedLogs.length > 0) {
+      if (formattedData.length > 0) {
         setSelectedLog((prev) => {
-          if (!prev) return mergedLogs[0];
-          return mergedLogs.find((l) => l.id === prev.id) || mergedLogs[0];
+          if (!prev) return formattedData[0];
+          return formattedData.find((l) => l.id === prev.id) || formattedData[0];
         });
       } else {
         setSelectedLog(null);
